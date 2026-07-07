@@ -46,7 +46,12 @@ Format loosely follows [Keep a Changelog](https://keepachangelog.com/).
 - CFO executive summary, client-IT technical handoff, platform-engineering design review.
 
 ## Day 14 — Quality assurance & cross-reference
-- Internal consistency pass, linting, CHANGELOG and repository-structure verification.
+- Internal consistency pass across all 9 deliverables (canonical anchors verified).
+- Exported all 12 architecture diagrams to PNG; added editable Draw.io C4 sources.
+- Consolidated tabular deliverables into a 6-sheet Excel workbook.
+- Added project glossary; verified OpenAPI linting and repository structure.
 
 ## Day 15 — Final submission
-- Consolidated submission, presentation deck, repository transfer.
+- Generated consolidated 70-page main-report PDF (D1–D9, diagrams inline, day-labelled).
+- Added submission index mapping deliverables to their source of record.
+- Repository prepared for transfer.
