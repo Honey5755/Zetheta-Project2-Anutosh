@@ -1,0 +1,33 @@
+%% DGM_DataFlow_Batch.mmd
+%% Batch extraction flow (Cost Centre/Profit Centre 4h, Fixed Assets/Budget daily)
+flowchart LR
+    classDef sap fill:#0faaff,stroke:#0a6fa8,color:#000
+    classDef plat fill:#438dd5,stroke:#2e6295,color:#fff
+    classDef fin fill:#2fae66,stroke:#1d6e41,color:#fff
+    classDef store fill:#438dd5,stroke:#2e6295,color:#fff,stroke-dasharray:4 3
+
+    SCH["Scheduler<br/>outside batch window<br/>(avoid 01:00-04:30 IST)"]:::plat
+    EXT["ODP Extractor<br/>full/master extract<br/>package size tuned"]:::plat
+    S3[("Claim-Check Store<br/>S3 ap-south-1<br/>large payload")]:::store
+
+    subgraph SAPZ["SAP S/4HANA"]
+        MASTER["Master + totals tables<br/>CSKS/CSKT/CEPC/CEPCT<br/>ANLA/ANLZ/ANLP/COSP"]:::sap
+    end
+
+    K1["Kafka topic<br/>domain.cc / domain.pc /<br/>domain.fa / domain.budget<br/>(claim-check ref)"]:::plat
+    TR["Transformation Engine<br/>hierarchy flatten L1-L7<br/>depreciation mapping"]:::plat
+    K2["Kafka topic<br/>load.cc / load.pc ..."]:::plat
+    LD["FinSight Loader"]:::plat
+    FIN["Zetheta FinSight<br/>/cost-centres /profit-centres<br/>/fixed-assets /budget-actuals"]:::fin
+
+    SCH -->|trigger batch job| EXT
+    EXT -->|read master data| MASTER
+    EXT -->|write large payload| S3
+    EXT -->|publish reference event| K1
+    K1 --> TR
+    TR -->|dereference| S3
+    TR --> K2
+    K2 --> LD
+    LD --> FIN
+    note["Master data loads BEFORE<br/>transactional (referential integrity)"]
+    note -.-> LD

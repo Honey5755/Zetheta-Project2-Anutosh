@@ -1,0 +1,30 @@
+%% DGM_DataFlow_ErrorRetry.mmd
+%% Error handling and retry flow with DLQ
+flowchart TB
+    classDef plat fill:#438dd5,stroke:#2e6295,color:#fff
+    classDef dec fill:#f2c14e,stroke:#b8860b,color:#000
+    classDef store fill:#c0392b,stroke:#7d2519,color:#fff
+
+    IN["Load-ready event<br/>from Kafka"]:::plat
+    POST["FinSight Loader<br/>POST /api/v2/ resource"]:::plat
+    CLASS{"Classify outcome"}:::dec
+    OK["2xx success<br/>commit offset,<br/>emit audit record"]:::plat
+    TRAN{"TRANSIENT?<br/>5xx / 429 / timeout"}:::dec
+    CB{"Circuit breaker<br/>state?"}:::dec
+    BACK["Retry with backoff<br/>wait = min(cap,<br/>random(base, base*2^attempt))"]:::plat
+    BUDGET{"Attempts < max<br/>AND retry budget ok?"}:::dec
+    PERM["PERMANENT / DATA_QUALITY<br/>4xx validation, mapping error"]:::plat
+    DLQ[("dlq topic + S3<br/>extended retention<br/>error code + context")]:::store
+    ALERT["Monitoring Stack<br/>PagerDuty alert<br/>by severity"]:::plat
+    MANUAL["Manual inspection<br/>+ reprocess from DLQ"]:::plat
+
+    IN --> POST --> CLASS
+    CLASS -->|2xx| OK
+    CLASS -->|error| TRAN
+    TRAN -->|yes| CB
+    CB -->|OPEN| DLQ
+    CB -->|CLOSED / HALF-OPEN| BUDGET
+    BUDGET -->|yes| BACK --> POST
+    BUDGET -->|no| DLQ
+    TRAN -->|no| PERM --> DLQ
+    DLQ --> ALERT --> MANUAL --> IN

@@ -1,0 +1,32 @@
+%% DGM_Seq_ReconMismatch.mmd
+%% Reconciliation mismatch detection and resolution
+sequenceDiagram
+    autonumber
+    participant SCH as Scheduler
+    participant RE as Reconciliation Service
+    participant SAP as SAP S/4HANA
+    participant FIN as Zetheta FinSight
+    participant AUD as Audit / Wire-Tap
+    participant DLQ as DLQ
+    participant MON as Monitoring Stack
+    participant AUDT as Dr. Kulkarni (Audit)
+
+    SCH->>RE: Trigger recon cycle (per domain, per company code)
+    RE->>SAP: Fetch source control totals (count, SUM debit/credit)
+    SAP-->>RE: Source totals for MC01
+    RE->>FIN: Fetch loaded record counts + amounts
+    FIN-->>RE: Target totals for MERIDIAN-MC01
+    RE->>RE: Compare completeness + accuracy + debit=credit
+    alt Totals match
+        RE->>MON: Report zero-break (green)
+    else Mismatch detected (ERR-RECON-*)
+        RE->>AUD: Query lineage for missing documentId(s)
+        AUD-->>RE: SAP doc no -> FinSight id map (gap identified)
+        RE->>MON: Raise recon break + PagerDuty (P2)
+        RE->>DLQ: Enqueue targeted re-load for missing docs
+        DLQ->>FIN: Replay POST (idempotent)
+        FIN-->>DLQ: 201 Created
+        RE->>RE: Re-run recon for affected documents
+        RE->>MON: Confirm zero-break restored
+        RE->>AUDT: Publish reconciliation report (lineage proof)
+    end

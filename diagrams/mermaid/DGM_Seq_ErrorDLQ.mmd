@@ -1,0 +1,33 @@
+%% DGM_Seq_ErrorDLQ.mmd
+%% Error scenario with retry, circuit breaker and dead-letter
+sequenceDiagram
+    autonumber
+    participant K as Kafka (load.ap)
+    participant LD as FinSight Loader
+    participant CB as Circuit Breaker
+    participant FIN as Zetheta FinSight
+    participant DLQ as DLQ (dlq topic + S3)
+    participant MON as Monitoring Stack
+    participant OPS as On-call Engineer
+
+    K->>LD: Consume payables load event
+    LD->>CB: Guarded call (state CLOSED)
+    CB->>FIN: POST /api/v2/payables (Idempotency-Key)
+    FIN-->>CB: 503 Service Unavailable (TRANSIENT)
+    CB-->>LD: Failure recorded
+    LD->>LD: attempt=1, wait=min(cap, random(base, base*2^1))
+    LD->>CB: Retry POST
+    CB->>FIN: POST /api/v2/payables
+    FIN-->>CB: 503 again
+    Note over CB: Failure threshold exceeded -> state OPEN
+    CB-->>LD: Short-circuit (fail fast)
+    LD->>DLQ: Publish message + ERR-LOAD-* + context
+    DLQ->>MON: Emit dlq_depth metric + error log
+    MON->>OPS: PagerDuty alert (P2)
+    Note over CB: After open-duration -> HALF-OPEN probe
+    CB->>FIN: Probe POST
+    FIN-->>CB: 201 Created -> state CLOSED
+    OPS->>DLQ: Inspect and trigger reprocess
+    DLQ->>LD: Replay message
+    LD->>FIN: POST /api/v2/payables (same Idempotency-Key)
+    FIN-->>LD: 201 Created (idempotent, no duplicate)

@@ -1,0 +1,32 @@
+%% DGM_Seq_HappyPath.mmd
+%% End-to-end happy-path sync sequence (GL delta example)
+sequenceDiagram
+    autonumber
+    participant SCH as Scheduler
+    participant EXT as ODP Extractor
+    participant SAP as SAP S/4HANA
+    participant K as Kafka
+    participant TR as Transformation Engine
+    participant LD as FinSight Loader
+    participant FIN as Zetheta FinSight
+    participant AUD as Audit / Wire-Tap
+
+    SCH->>EXT: Trigger GL extraction (every 30 min)
+    EXT->>EXT: Check RFC pool (<=50) and batch window
+    EXT->>SAP: ODP delta request since last token (OAuth2 + X.509)
+    SAP-->>EXT: Delta package (ACDOCA/BKPF/BSEG rows)
+    EXT->>EXT: Persist advanced delta token (control DB)
+    EXT->>K: Publish to domain.gl (partition = MC01/02/03)
+    K-->>AUD: Wire-tap copy (lineage: SAP doc no)
+    K->>TR: Consume GL event
+    TR->>TR: Route by company code, map fields
+    TR->>TR: Enrich currency (TCURR M), map V3 period, flatten hierarchy
+    TR->>TR: Preserve CGST/SGST/IGST, run DQ validation
+    TR->>K: Publish to load.gl (normalised)
+    K->>LD: Consume load-ready event
+    LD->>LD: Resolve tenant MC01 -> MERIDIAN-MC01
+    LD->>FIN: POST /api/v2/journal-entries (Idempotency-Key=documentId)
+    FIN-->>LD: 201 Created
+    LD->>K: Commit offset
+    LD-->>AUD: Emit lineage record (SAP doc no -> FinSight id)
+    Note over SCH,FIN: Freshness achieved <= 4h (target 83% improvement vs 24h)

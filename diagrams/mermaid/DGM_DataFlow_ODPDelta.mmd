@@ -1,0 +1,30 @@
+%% DGM_DataFlow_ODPDelta.mmd
+%% Real-time ODP delta flow (GL/AP/AR/ML/PO/SO/Inventory - 30/60 min)
+flowchart LR
+    classDef sap fill:#0faaff,stroke:#0a6fa8,color:#000
+    classDef plat fill:#438dd5,stroke:#2e6295,color:#fff
+    classDef fin fill:#2fae66,stroke:#1d6e41,color:#fff
+
+    subgraph SAPZ["SAP S/4HANA - Pune DC"]
+        CDS["CDS Views<br/>(C_JournalEntry, etc.)"]:::sap
+        ODPPROV["ODP Provider<br/>delta token"]:::sap
+    end
+
+    SCH["Scheduler<br/>fires every 30 min<br/>(60 min ML/Inventory)"]:::plat
+    EXT["ODP Extractor<br/>requests delta since<br/>last token"]:::plat
+    K1["Kafka topic<br/>domain.gl / domain.ap ...<br/>partition = company code"]:::plat
+    TR["Transformation Engine<br/>route + map + enrich"]:::plat
+    K2["Kafka topic<br/>load.gl / load.ap ..."]:::plat
+    LD["FinSight Loader<br/>idempotent POST"]:::plat
+    FIN["Zetheta FinSight<br/>/api/v2/ resources<br/>tenant MERIDIAN-MC0x"]:::fin
+
+    SCH -->|trigger| EXT
+    EXT -->|OAuth2 + X.509 read| CDS
+    CDS --> ODPPROV
+    ODPPROV -->|delta package| EXT
+    EXT -->|only if token advances| ODPPROV
+    EXT -->|publish event + persist token| K1
+    K1 --> TR
+    TR --> K2
+    K2 --> LD
+    LD -->|Idempotency-Key = documentId| FIN

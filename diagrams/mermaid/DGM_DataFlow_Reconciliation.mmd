@@ -1,0 +1,33 @@
+%% DGM_DataFlow_Reconciliation.mmd
+%% Reconciliation and audit flow
+flowchart TB
+    classDef sap fill:#0faaff,stroke:#0a6fa8,color:#000
+    classDef plat fill:#438dd5,stroke:#2e6295,color:#fff
+    classDef fin fill:#2fae66,stroke:#1d6e41,color:#fff
+    classDef dec fill:#f2c14e,stroke:#b8860b,color:#000
+    classDef store fill:#c0392b,stroke:#7d2519,color:#fff
+
+    SAP["SAP S/4HANA<br/>source control totals<br/>count + SUM(debit)/SUM(credit)"]:::sap
+    AUDIT["Audit / Wire-Tap store<br/>SAP doc no -> FinSight record"]:::plat
+    FIN["Zetheta FinSight<br/>loaded record counts<br/>+ amounts per tenant"]:::fin
+    RECON["Reconciliation Service<br/>per document + per domain"]:::plat
+
+    C1{"Completeness<br/>src count = tgt count?"}:::dec
+    C2{"Accuracy<br/>src amount = tgt amount?"}:::dec
+    C3{"Consistency<br/>debit = credit per doc?<br/>refs resolve?"}:::dec
+    C4{"Timeliness<br/>within 4h SLA?"}:::dec
+
+    OKR["Zero-break status<br/>green on recon dashboard"]:::plat
+    BREAK["Reconciliation break<br/>ERR-RECON-*"]:::store
+    ALERT["PagerDuty + Grafana<br/>notify Audit + Ops"]:::plat
+
+    SAP --> RECON
+    FIN --> RECON
+    AUDIT --> RECON
+    RECON --> C1 --> C2 --> C3 --> C4
+    C1 -->|mismatch| BREAK
+    C2 -->|mismatch| BREAK
+    C3 -->|mismatch| BREAK
+    C4 -->|late| BREAK
+    C4 -->|pass| OKR
+    BREAK --> ALERT
