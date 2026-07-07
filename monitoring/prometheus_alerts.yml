@@ -1,0 +1,233 @@
+# Prometheus alerting rules — FDE-9B (SAP S/4HANA -> Zetheta FinSight)
+# Project code: 493560B | Author: Anutosh Mishra | Deliverable: D6 Monitoring & Alerting
+# Covers the 18 alert rules in D6 §5. Severity label routes to PagerDuty/Slack/Jira via Alertmanager.
+# Runbook anchors resolve in deliverables/D8_Deployment/runbook.md
+---
+groups:
+  - name: meridian_finsight.recording
+    interval: 30s
+    rules:
+      - record: pipeline:health:state
+        expr: max(integration_pipeline_health_state)
+      - record: records:baseline:domain
+        expr: quantile_over_time(0.5, records_processed_total[7d])
+      - record: job:error_ratio:5m
+        expr: sum(rate(errors_total[5m])) / sum(rate(requests_total[5m])) * 100
+
+  - name: meridian_finsight.alerts
+    rules:
+      # 1 - Pipeline health RED (MON-001)
+      - alert: PipelineHealthRed
+        expr: pipeline:health:state == 2
+        for: 1m
+        labels:
+          severity: P1
+          service: pipeline
+          runbook: pipeline-red
+        annotations:
+          summary: "Integration pipeline health is RED"
+          description: "One or more domains are >4h stale or the last run failed. Pipeline health state == 2 (RED) for over 1 minute. Page primary on-call and open an incident bridge."
+
+      # 2 - Error rate critical (MON-004)
+      - alert: ErrorRateCritical
+        expr: (sum(rate(errors_total[5m])) / sum(rate(requests_total[5m])) * 100) > 5
+        for: 5m
+        labels:
+          severity: P1
+          service: pipeline
+          runbook: error-rate
+        annotations:
+          summary: "Error rate above 5% ({{ $value | printf \"%.2f\" }}%)"
+          description: "Aggregate error rate has exceeded the 5% critical threshold for 5m. Break down by error_class (TRANSIENT/PERMANENT/DATA_QUALITY/SYSTEM) and attach to the incident."
+
+      # 3 - DLQ depth critical (MON-005)
+      - alert: DLQDepthCritical
+        expr: kafka_consumer_group_lag{topic="dlq"} > 500
+        for: 5m
+        labels:
+          severity: P1
+          service: kafka
+          runbook: dlq-drain
+        annotations:
+          summary: "DLQ depth above 500 ({{ $value }} messages)"
+          description: "Dead-letter queue backlog exceeds 500 messages. Trigger DLQ triage and inspect top error_codes (ERR-MAP-*, ERR-LOAD-*)."
+
+      # 4 - SAP RFC pool critical (MON-007, ERR-EXT-002)
+      - alert: SAPRFCPoolCritical
+        expr: sap_rfc_pool_utilisation > 90
+        for: 2m
+        labels:
+          severity: P1
+          service: sap
+          runbook: rfc-pool
+        annotations:
+          summary: "SAP RFC pool utilisation above 90% ({{ $value }}%)"
+          description: "RFC pool (max 50 concurrent) is above 90%. Risk of blocking SAP dialog users (ERR-EXT-002). Throttle Scheduler concurrency and halt non-critical extractions."
+
+      # 5 - Kafka broker down (ERR-SYS-001)
+      - alert: KafkaBrokerDown
+        expr: kafka_brokers_online < 3
+        for: 1m
+        labels:
+          severity: P1
+          service: kafka
+          runbook: kafka-broker
+        annotations:
+          summary: "Kafka broker down ({{ $value }} of 3 online)"
+          description: "Fewer than 3 brokers online (RF=3, ISR=2). ERR-SYS-001. Producers should circuit-break; verify ISR recovery and failover."
+
+      # 6 - Reconciliation break (MON-006, ERR-RECON-001/002)
+      - alert: ReconciliationBreak
+        expr: max(recon_variance_amount) by (domain) > 0 or max(recon_status) by (domain) == 2
+        for: 0m
+        labels:
+          severity: P2
+          service: reconciliation
+          runbook: recon-break
+        annotations:
+          summary: "Reconciliation BREAK in domain {{ $labels.domain }}"
+          description: "Reconciliation reported a variance/break for {{ $labels.domain }} (ERR-RECON-001/002). Generate break report and notify the data steward."
+
+      # 7 - Referential integrity break (ERR-RECON-003)
+      - alert: ReferentialIntegrityBreak
+        expr: increase(errors_total{error_code="ERR-RECON-003"}[15m]) > 0
+        for: 0m
+        labels:
+          severity: P2
+          service: reconciliation
+          runbook: master-data-resync
+        annotations:
+          summary: "Referential integrity break in {{ $labels.domain }}"
+          description: "Orphan reference detected (ERR-RECON-003). Trigger master-data resync (GL->CC, GL->PC, AP->vendor, AR->customer)."
+
+      # 8 - FinSight rate-limit low (MON-008, ERR-LOAD-001 / HTTP 429)
+      - alert: FinSightRateLimitLow
+        expr: (finsight_rate_limit_remaining / finsight_rate_limit_total * 100) < 10
+        for: 3m
+        labels:
+          severity: P2
+          service: finsight
+          runbook: finsight-429
+        annotations:
+          summary: "FinSight rate-limit headroom below 10% ({{ $value | printf \"%.1f\" }}%)"
+          description: "Approaching FinSight API rate limit (ERR-LOAD-001, HTTP 429). Loader must honour Retry-After and back off with jitter."
+
+      # 9 - Circuit breaker open (MON-012)
+      - alert: CircuitBreakerOpen
+        expr: circuit_breaker_state == 1
+        for: 1m
+        labels:
+          severity: P2
+          service: "{{ $labels.service }}"
+          runbook: circuit-breaker
+        annotations:
+          summary: "Circuit breaker OPEN for {{ $labels.service }}"
+          description: "Breaker for {{ $labels.service }} has been Open for 1m. Confirm downstream health and schedule a half-open probe."
+
+      # 10 - Kafka consumer lag high (MON-011)
+      - alert: KafkaConsumerLagHigh
+        expr: kafka_consumer_group_lag{topic!="dlq"} > 50000
+        for: 5m
+        labels:
+          severity: P2
+          service: kafka
+          runbook: consumer-lag
+        annotations:
+          summary: "Kafka consumer lag high on {{ $labels.topic }} ({{ $value }} msgs)"
+          description: "Consumer lag on {{ $labels.topic }} p{{ $labels.partition }} exceeds 50K. Transform/Loader falling behind producers. Scale consumers."
+
+      # 11 - Resource utilisation high (MON-010)
+      - alert: ResourceUtilisationHigh
+        expr: max without (mountpoint) (node_cpu_utilisation or node_memory_utilisation or node_disk_utilisation) > 90
+        for: 5m
+        labels:
+          severity: P2
+          service: infra
+          runbook: resource-high
+        annotations:
+          summary: "Node resource above 90% on {{ $labels.instance }}"
+          description: "CPU/memory/disk utilisation above 90% for 5m on {{ $labels.instance }}. Autoscale node group."
+
+      # 12 - Disk space low (ERR-SYS-002)
+      - alert: DiskSpaceLow
+        expr: node_disk_free_percent < 10
+        for: 2m
+        labels:
+          severity: P2
+          service: infra
+          runbook: disk-low
+        annotations:
+          summary: "Disk free below 10% on {{ $labels.instance }} ({{ $value }}%)"
+          description: "Processing node disk below 10% (ERR-SYS-002). Archive old logs/indices and request volume expansion."
+
+      # 13 - FinSight auth failure (ERR-LOAD-005 / HTTP 401)
+      - alert: FinSightAuthFailure
+        expr: increase(errors_total{error_code="ERR-LOAD-005"}[10m]) > 3
+        for: 0m
+        labels:
+          severity: P2
+          service: security
+          runbook: auth-failure
+        annotations:
+          summary: "Repeated FinSight authentication failures"
+          description: "More than 3 HTTP 401 failures in 10m after token refresh (ERR-LOAD-005). Refresh token once; if it persists, alert the security team."
+
+      # 14 - Throughput below baseline (MON-002)
+      - alert: ThroughputBelowBaseline
+        expr: rate(records_processed_total[5m]) < 0.5 * records:baseline:domain
+        for: 10m
+        labels:
+          severity: P3
+          service: pipeline
+          runbook: throughput-drop
+        annotations:
+          summary: "Throughput below 50% baseline for {{ $labels.domain }}"
+          description: "Domain {{ $labels.domain }} throughput under half its 7-day same-slot baseline for 10m. Check SAP batch window (01:00-04:30 IST) and maintenance windows before escalating."
+
+      # 15 - Latency P95 high (MON-003)
+      - alert: LatencyP95High
+        expr: histogram_quantile(0.95, rate(api_duration_seconds_bucket[5m])) > 5
+        for: 10m
+        labels:
+          severity: P3
+          service: pipeline
+          runbook: latency-p95
+        annotations:
+          summary: "P95 latency above 5s ({{ $value | printf \"%.2f\" }}s)"
+          description: "P95 end-to-end/API latency above 5s for 10m. Capture slow-span trace exemplars from Jaeger."
+
+      # 16 - Data freshness SLA breach (MON-009)
+      - alert: DataFreshnessSLABreach
+        expr: (time() - max(last_successful_load_timestamp) by (domain)) > 14400
+        for: 0m
+        labels:
+          severity: P3
+          service: pipeline
+          runbook: freshness-sla
+        annotations:
+          summary: "Data freshness SLA (4h) breached for {{ $labels.domain }}"
+          description: "No successful load for {{ $labels.domain }} within the 4h SLA. Trigger a catch-up extraction for the stale domain."
+
+      # 17 - ODP subscription invalidated (ERR-EXT-003)
+      - alert: ODPSubscriptionInvalidated
+        expr: increase(errors_total{error_code="ERR-EXT-003"}[15m]) > 0
+        for: 0m
+        labels:
+          severity: P3
+          service: sap
+          runbook: odp-schema-change
+        annotations:
+          summary: "ODP subscription invalidated for {{ $labels.domain }}"
+          description: "ODP provider structure changed (ERR-EXT-003). Halt extraction for the domain, apply graceful degradation, and open a mapping-update task."
+
+      # 18 - Data-quality DLQ trend (ERR-MAP-*)
+      - alert: DataQualityDLQTrend
+        expr: increase(errors_total{error_class="DATA_QUALITY"}[1h]) > 100
+        for: 0m
+        labels:
+          severity: P4
+          service: pipeline
+          runbook: dq-trend
+        annotations:
+          summary: "Data-quality error trend rising ({{ $value }} in 1h)"
+          description: "More than 100 DATA_QUALITY errors (ERR-MAP-*) in the last hour. Auto-file a DQ Jira ticket with top error_code and affected SAP document numbers."
