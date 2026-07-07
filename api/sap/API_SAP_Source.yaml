@@ -1,0 +1,1845 @@
+openapi: 3.0.3
+info:
+  title: Meridian SAP S/4HANA Source Extraction API
+  version: 1.0.0
+  description: >
+    OData v2 source-extraction contract for the FDE-9B integration between
+    Meridian Manufacturing Ltd. SAP S/4HANA (2023 FPS02, system PRD client 100)
+    and Zetheta FinSight 4.2.
+
+
+    This specification exposes the twelve delta-capable source endpoints
+    (SRC-001 through SRC-012) consumed by the ODP Extractor component. Each
+    endpoint is a read-only OData collection surfaced through the SAP Gateway
+    and backed by ABAP CDS consumption views over the underlying SAP tables.
+
+
+    ## Extraction model
+
+    * **Delta tracking** — Every collection supports ODP delta extraction. The
+      caller passes the `deltaToken` returned by the previous successful call.
+      When the token is omitted the endpoint performs a full initialisation
+      load. The delta token is only advanced on a successful HTTP 200, so a
+      failed extraction is safely re-driven with no data loss.
+
+    * **Pagination** — Server-side paging follows OData conventions using
+      `$top` and `$skip`. Responses carry `@odata.count` and, when more data is
+      available, an `@odata.nextLink` continuation cursor.
+
+    * **Multi-company routing** — The `companyCode` filter scopes an extraction
+      to one of the canonical SAP company codes (`MC01`, `MC02`, `MC03`) which
+      the downstream Transformation Engine maps to the matching FinSight tenant.
+
+    * **Governor limits** — Extraction respects the Basis-imposed limit of one
+      ODP delta per provider per 30 minutes and a pool of no more than 50
+      concurrent RFC connections. Rate-limit state is returned on every response
+      via the `X-RateLimit-*` headers.
+
+
+    ## Security
+
+    Access is protected by mutual TLS. Callers present an X.509 client
+    certificate issued by the Meridian internal CA at the SAP Gateway reverse
+    proxy, and additionally supply an OAuth 2.0 bearer token (SAP OAuth 2.0
+    server, `client_credentials` grant) **or** a gateway API key. The client
+    certificate binds the OAuth client to a registered technical user
+    (`ZFINSIGHT_EXTRACT`) subject to SAP authorisation object checks.
+  contact:
+    name: Meridian Integration Platform Team
+    email: integration-platform@meridian-mfg.example.com
+  license:
+    name: Proprietary - Meridian Manufacturing Ltd.
+    url: https://meridian-mfg.example.com/legal/api-terms
+  termsOfService: https://meridian-mfg.example.com/legal/api-terms
+servers:
+  - url: https://sap-gw.meridian-mfg.example.com/sap/odata/v2
+    description: SAP S/4HANA production gateway (PRD, client 100)
+  - url: https://sap-gw-qas.meridian-mfg.example.com/sap/odata/v2
+    description: SAP S/4HANA quality system (QAS)
+tags:
+  - name: General Ledger
+    description: Universal Journal line items (SRC-001, ACDOCA / BKPF / BSEG).
+  - name: Accounts Payable
+    description: Vendor open items and vendor master (SRC-002, BSIK / LFA1 / LFC1).
+  - name: Accounts Receivable
+    description: Customer open items and customer master (SRC-003, BSID / KNA1 / KNC1).
+  - name: Cost Centre Accounting
+    description: Cost centre master and CO totals (SRC-004, CSKS / CSKT / COSS).
+  - name: Profit Centre Accounting
+    description: Profit centre master data (SRC-005, CEPC / CEPCT).
+  - name: Material Ledger
+    description: Material valuation and actual costing (SRC-006, MBEW / COSP).
+  - name: Purchase Orders
+    description: Purchasing documents (SRC-007, EKKO / EKPO / EKET).
+  - name: Sales Orders
+    description: Sales documents (SRC-008, VBAK / VBAP / VBEP).
+  - name: Fixed Assets
+    description: Asset master and periodic values (SRC-009, ANLA / ANLZ / ANLP).
+  - name: Bank Statements
+    description: Electronic bank statement postings (SRC-010, FEBKO / FEBEP).
+  - name: Budget Actual
+    description: CO plan/actual totals (SRC-011, COSP / COSS).
+  - name: Inventory
+    description: Storage location stock and valuation (SRC-012, MARD / MBEW).
+security:
+  - sapOAuth2: []
+  - sapApiKey: []
+paths:
+  /journal-entries:
+    get:
+      operationId: getJournalEntries
+      summary: Extract General Ledger journal entries (SRC-001)
+      description: >
+        Delta extraction of Universal Journal line items from CDS view
+        `I_JournalEntryItem` over ACDOCA (with header context from BKPF and
+        segment detail from BSEG). Freshness target 30 minutes via ODP delta.
+      tags:
+        - General Ledger
+      parameters:
+        - $ref: '#/components/parameters/CompanyCode'
+        - $ref: '#/components/parameters/Top'
+        - $ref: '#/components/parameters/Skip'
+        - $ref: '#/components/parameters/DeltaToken'
+        - $ref: '#/components/parameters/FiscalYear'
+        - $ref: '#/components/parameters/PostingDateFrom'
+      responses:
+        '200':
+          description: Journal entry page returned.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JournalEntryCollection'
+              example:
+                '@odata.context': $metadata#JournalEntries
+                '@odata.count': 4821
+                '@odata.deltaToken': 'D20260707T093000_000123'
+                '@odata.nextLink': /journal-entries?$skip=100&deltaToken=D20260707T093000_000123
+                value:
+                  - documentId: MC01-2026-0100004821
+                    companyCode: MC01
+                    fiscalYear: 2026
+                    documentNumber: '0100004821'
+                    lineItem: 1
+                    ledger: '0L'
+                    glAccount: '0000400000'
+                    documentType: SA
+                    postingDate: '2026-07-07'
+                    documentDate: '2026-07-06'
+                    fiscalPeriod: 4
+                    amountLC: 152340.75
+                    currencyLC: INR
+                    amountTC: 152340.75
+                    currencyTC: INR
+                    debitCreditIndicator: S
+                    costCentre: '0000MC01IT'
+                    profitCentre: 'PC-PL01'
+                    userName: RGGBS_BTCH
+                    transactionCode: FB50
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /payables:
+    get:
+      operationId: getPayables
+      summary: Extract Accounts Payable open items (SRC-002)
+      description: >
+        Delta extraction of vendor open items (BSIK) enriched with vendor
+        general (LFA1) and company-code (LFC1) master data via CDS view
+        `I_OperationalAcctgDocItemAP`. Freshness target 30 minutes.
+      tags:
+        - Accounts Payable
+      parameters:
+        - $ref: '#/components/parameters/CompanyCode'
+        - $ref: '#/components/parameters/Top'
+        - $ref: '#/components/parameters/Skip'
+        - $ref: '#/components/parameters/DeltaToken'
+        - $ref: '#/components/parameters/FiscalYear'
+      responses:
+        '200':
+          description: Payables page returned.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PayableCollection'
+              example:
+                '@odata.context': $metadata#Payables
+                '@odata.count': 812
+                '@odata.deltaToken': 'D20260707T093000_000045'
+                value:
+                  - documentId: MC01-2026-1900002011
+                    companyCode: MC01
+                    fiscalYear: 2026
+                    documentNumber: '1900002011'
+                    lineItem: 1
+                    vendorId: '0000100234'
+                    vendorName: Bharat Precision Castings Pvt Ltd
+                    vendorCountry: IN
+                    vendorGstin: 27AABCB1234C1Z5
+                    reconciliationAccount: '0000160000'
+                    paymentTerms: NT30
+                    amountLC: 89000.00
+                    currencyLC: INR
+                    assignment: 'PO-4500001234'
+                    dueDate: '2026-08-06'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /receivables:
+    get:
+      operationId: getReceivables
+      summary: Extract Accounts Receivable open items (SRC-003)
+      description: >
+        Delta extraction of customer open items (BSID) enriched with customer
+        general (KNA1) and company-code (KNC1) master data. Freshness target
+        30 minutes.
+      tags:
+        - Accounts Receivable
+      parameters:
+        - $ref: '#/components/parameters/CompanyCode'
+        - $ref: '#/components/parameters/Top'
+        - $ref: '#/components/parameters/Skip'
+        - $ref: '#/components/parameters/DeltaToken'
+        - $ref: '#/components/parameters/FiscalYear'
+      responses:
+        '200':
+          description: Receivables page returned.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReceivableCollection'
+              example:
+                '@odata.context': $metadata#Receivables
+                '@odata.count': 640
+                '@odata.deltaToken': 'D20260707T093000_000067'
+                value:
+                  - documentId: MC03-2026-1800003345
+                    companyCode: MC03
+                    fiscalYear: 2026
+                    documentNumber: '1800003345'
+                    lineItem: 1
+                    customerId: '0000200567'
+                    customerName: Southern Auto Systems Ltd
+                    customerCountry: IN
+                    customerGstin: 33AACCS9876D1Z2
+                    reconciliationAccount: '0000140000'
+                    paymentTerms: NT45
+                    amountLC: 245600.00
+                    currencyLC: INR
+                    dueDate: '2026-08-21'
+                    dunningLevel: 0
+                    assignment: 'SO-0000012345'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /cost-centres:
+    get:
+      operationId: getCostCentres
+      summary: Extract Cost Centre master and totals (SRC-004)
+      description: >
+        Batch master extraction of cost centre master (CSKS) with texts (CSKT)
+        and CO internal totals (COSS). Master extraction cadence 4 hours.
+        Hierarchy nodes are resolved downstream from SETNODE / SETLEAF.
+      tags:
+        - Cost Centre Accounting
+      parameters:
+        - $ref: '#/components/parameters/CompanyCode'
+        - $ref: '#/components/parameters/Top'
+        - $ref: '#/components/parameters/Skip'
+        - $ref: '#/components/parameters/DeltaToken'
+        - $ref: '#/components/parameters/ControllingArea'
+      responses:
+        '200':
+          description: Cost centre page returned.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostCentreCollection'
+              example:
+                '@odata.context': $metadata#CostCentres
+                '@odata.count': 214
+                '@odata.deltaToken': 'D20260707T080000_000009'
+                value:
+                  - costCentreId: '0000MC01IT'
+                    controllingArea: '1000'
+                    companyCode: MC01
+                    validFrom: '2020-04-01'
+                    validTo: '9999-12-31'
+                    name: IT Shared Services Pune
+                    costCentreCategory: '1'
+                    responsiblePerson: A Krishnan
+                    hierarchyNode: 'H-IT-01'
+                    profitCentre: 'PC-PL01'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /profit-centres:
+    get:
+      operationId: getProfitCentres
+      summary: Extract Profit Centre master (SRC-005)
+      description: >
+        Batch master extraction of profit centre master (CEPC) with texts
+        (CEPCT). Master extraction cadence 4 hours. Segment assignment is
+        carried through for downstream segment reporting.
+      tags:
+        - Profit Centre Accounting
+      parameters:
+        - $ref: '#/components/parameters/CompanyCode'
+        - $ref: '#/components/parameters/Top'
+        - $ref: '#/components/parameters/Skip'
+        - $ref: '#/components/parameters/DeltaToken'
+        - $ref: '#/components/parameters/ControllingArea'
+      responses:
+        '200':
+          description: Profit centre page returned.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfitCentreCollection'
+              example:
+                '@odata.context': $metadata#ProfitCentres
+                '@odata.count': 96
+                '@odata.deltaToken': 'D20260707T080000_000003'
+                value:
+                  - profitCentreId: 'PC-PL01'
+                    controllingArea: '1000'
+                    companyCode: MC01
+                    validFrom: '2020-04-01'
+                    validTo: '9999-12-31'
+                    name: Pune Engine Components
+                    segment: 'SEG-AUTO'
+                    hierarchyNode: 'H-PC-AUTO'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /material-ledger:
+    get:
+      operationId: getMaterialLedger
+      summary: Extract Material Ledger valuation (SRC-006)
+      description: >
+        Delta extraction of material valuation (MBEW) and CO external totals
+        (COSP) forming the actual costing layer. Freshness target 60 minutes.
+      tags:
+        - Material Ledger
+      parameters:
+        - $ref: '#/components/parameters/CompanyCode'
+        - $ref: '#/components/parameters/Top'
+        - $ref: '#/components/parameters/Skip'
+        - $ref: '#/components/parameters/DeltaToken'
+        - $ref: '#/components/parameters/Plant'
+      responses:
+        '200':
+          description: Material ledger page returned.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MaterialLedgerCollection'
+              example:
+                '@odata.context': $metadata#MaterialLedger
+                '@odata.count': 1502
+                '@odata.deltaToken': 'D20260707T090000_000201'
+                value:
+                  - materialId: '000000000000102345'
+                    valuationArea: PL01
+                    companyCode: MC01
+                    priceControl: S
+                    standardPrice: 145.50
+                    movingAveragePrice: 148.20
+                    priceUnit: 1
+                    totalStock: 12400.000
+                    totalValue: 1804200.00
+                    currencyLC: INR
+                    fiscalYear: 2026
+                    fiscalPeriod: 4
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /purchase-orders:
+    get:
+      operationId: getPurchaseOrders
+      summary: Extract Purchase Orders (SRC-007)
+      description: >
+        Delta extraction of purchasing documents: header (EKKO), items (EKPO)
+        and schedule lines (EKET). Freshness target 30 minutes.
+      tags:
+        - Purchase Orders
+      parameters:
+        - $ref: '#/components/parameters/CompanyCode'
+        - $ref: '#/components/parameters/Top'
+        - $ref: '#/components/parameters/Skip'
+        - $ref: '#/components/parameters/DeltaToken'
+        - $ref: '#/components/parameters/Plant'
+      responses:
+        '200':
+          description: Purchase order page returned.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderCollection'
+              example:
+                '@odata.context': $metadata#PurchaseOrders
+                '@odata.count': 388
+                '@odata.deltaToken': 'D20260707T093000_000112'
+                value:
+                  - purchaseOrderId: '4500001234'
+                    itemNumber: 10
+                    companyCode: MC01
+                    documentType: NB
+                    vendorId: '0000100234'
+                    purchasingOrg: '1000'
+                    purchasingGroup: '001'
+                    materialId: '000000000000102345'
+                    materialText: Bearing housing forged
+                    orderQuantity: 5000.000
+                    orderUnit: EA
+                    netPrice: 145.50
+                    priceUnit: 1
+                    plant: PL01
+                    deliveryDate: '2026-07-20'
+                    goodsReceivedQuantity: 2000.000
+                    createdOn: '2026-07-01'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /sales-orders:
+    get:
+      operationId: getSalesOrders
+      summary: Extract Sales Orders (SRC-008)
+      description: >
+        Delta extraction of sales documents: header (VBAK), items (VBAP) and
+        schedule lines (VBEP). Freshness target 30 minutes.
+      tags:
+        - Sales Orders
+      parameters:
+        - $ref: '#/components/parameters/CompanyCode'
+        - $ref: '#/components/parameters/Top'
+        - $ref: '#/components/parameters/Skip'
+        - $ref: '#/components/parameters/DeltaToken'
+        - $ref: '#/components/parameters/Plant'
+      responses:
+        '200':
+          description: Sales order page returned.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SalesOrderCollection'
+              example:
+                '@odata.context': $metadata#SalesOrders
+                '@odata.count': 275
+                '@odata.deltaToken': 'D20260707T093000_000099'
+                value:
+                  - salesOrderId: '0000012345'
+                    itemNumber: 10
+                    companyCode: MC03
+                    documentType: OR
+                    salesOrg: '3000'
+                    distributionChannel: '10'
+                    division: '00'
+                    customerId: '0000200567'
+                    materialId: '000000000000205678'
+                    materialText: Electronic control unit
+                    orderQuantity: 1200.000
+                    salesUnit: EA
+                    netValue: 3600000.00
+                    currency: INR
+                    plant: PL06
+                    requestedDeliveryDate: '2026-07-25'
+                    createdOn: '2026-07-02'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /fixed-assets:
+    get:
+      operationId: getFixedAssets
+      summary: Extract Fixed Assets (SRC-009)
+      description: >
+        Daily batch extraction of asset master (ANLA), time-dependent
+        assignments (ANLZ) and periodic values (ANLP).
+      tags:
+        - Fixed Assets
+      parameters:
+        - $ref: '#/components/parameters/CompanyCode'
+        - $ref: '#/components/parameters/Top'
+        - $ref: '#/components/parameters/Skip'
+        - $ref: '#/components/parameters/DeltaToken'
+        - $ref: '#/components/parameters/FiscalYear'
+      responses:
+        '200':
+          description: Fixed asset page returned.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FixedAssetCollection'
+              example:
+                '@odata.context': $metadata#FixedAssets
+                '@odata.count': 158
+                '@odata.deltaToken': 'D20260707T020000_000012'
+                value:
+                  - assetId: '000000012345'
+                    assetSubNumber: '0000'
+                    companyCode: MC01
+                    assetClass: '2000'
+                    description: CNC Machining Centre PL01
+                    capitalisationDate: '2022-05-15'
+                    costCentre: '0000MC01PR'
+                    profitCentre: 'PC-PL01'
+                    plant: PL01
+                    fiscalYear: 2026
+                    accumulatedDepreciation: 1250000.00
+                    plannedDepreciation: 250000.00
+                    netBookValue: 3750000.00
+                    currencyLC: INR
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /bank-statements:
+    get:
+      operationId: getBankStatements
+      summary: Extract Bank Statements (SRC-010)
+      description: >
+        Event-driven extraction of electronic bank statement header (FEBKO)
+        and line items (FEBEP) delivered by the FINSTA IDoc inbound. Records
+        are exposed as an OData collection for delta consumption.
+      tags:
+        - Bank Statements
+      parameters:
+        - $ref: '#/components/parameters/CompanyCode'
+        - $ref: '#/components/parameters/Top'
+        - $ref: '#/components/parameters/Skip'
+        - $ref: '#/components/parameters/DeltaToken'
+      responses:
+        '200':
+          description: Bank statement page returned.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BankStatementCollection'
+              example:
+                '@odata.context': $metadata#BankStatements
+                '@odata.count': 74
+                '@odata.deltaToken': 'D20260707T093000_000005'
+                value:
+                  - statementId: '00000042'
+                    statementLineNumber: 1
+                    companyCode: MC01
+                    houseBankAccount: 'HDFC-PL01'
+                    glAccount: '0000113100'
+                    fiscalYear: 2026
+                    amount: 152340.75
+                    currency: INR
+                    valueDate: '2026-07-07'
+                    transactionType: '051'
+                    documentReference: '1900002011'
+                    postingStatus: POSTED
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /budget-actuals:
+    get:
+      operationId: getBudgetActuals
+      summary: Extract Budget versus Actual totals (SRC-011)
+      description: >
+        Daily batch extraction of CO totals for plan and actual value types
+        from COSP (external) and COSS (internal). Downstream this folds into
+        General Ledger and Cost Centre analytics.
+      tags:
+        - Budget Actual
+      parameters:
+        - $ref: '#/components/parameters/CompanyCode'
+        - $ref: '#/components/parameters/Top'
+        - $ref: '#/components/parameters/Skip'
+        - $ref: '#/components/parameters/DeltaToken'
+        - $ref: '#/components/parameters/FiscalYear'
+        - $ref: '#/components/parameters/ControllingArea'
+      responses:
+        '200':
+          description: Budget/actual page returned.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetActualCollection'
+              example:
+                '@odata.context': $metadata#BudgetActuals
+                '@odata.count': 640
+                '@odata.deltaToken': 'D20260707T020000_000031'
+                value:
+                  - objectId: 'KS0000MC01IT'
+                    controllingArea: '1000'
+                    companyCode: MC01
+                    costCentre: '0000MC01IT'
+                    costElement: '0000400000'
+                    fiscalYear: 2026
+                    fiscalPeriod: 4
+                    valueType: ACTUAL
+                    version: '000'
+                    amount: 152340.75
+                    currency: INR
+                    budgetAmount: 200000.00
+                    variance: -47659.25
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+  /inventory:
+    get:
+      operationId: getInventory
+      summary: Extract Inventory stock (SRC-012)
+      description: >
+        Delta extraction of storage-location stock (MARD) with valuation from
+        MBEW. Freshness target 60 minutes. Downstream this folds into Material
+        Ledger analytics.
+      tags:
+        - Inventory
+      parameters:
+        - $ref: '#/components/parameters/CompanyCode'
+        - $ref: '#/components/parameters/Top'
+        - $ref: '#/components/parameters/Skip'
+        - $ref: '#/components/parameters/DeltaToken'
+        - $ref: '#/components/parameters/Plant'
+      responses:
+        '200':
+          description: Inventory page returned.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryCollection'
+              example:
+                '@odata.context': $metadata#Inventory
+                '@odata.count': 2044
+                '@odata.deltaToken': 'D20260707T090000_000410'
+                value:
+                  - materialId: '000000000000102345'
+                    plant: PL01
+                    storageLocation: '0001'
+                    companyCode: MC01
+                    unrestrictedStock: 8400.000
+                    qualityInspectionStock: 200.000
+                    blockedStock: 0.000
+                    returnsStock: 50.000
+                    baseUnit: EA
+                    valuationPrice: 145.50
+                    stockValue: 1222200.00
+                    currencyLC: INR
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+components:
+  securitySchemes:
+    sapOAuth2:
+      type: oauth2
+      description: >
+        SAP OAuth 2.0 authorization server (`client_credentials` grant) bound
+        to the technical user ZFINSIGHT_EXTRACT. Presented alongside an X.509
+        mutual-TLS client certificate at the SAP Gateway; the certificate and
+        token are cross-validated before SAP authorisation object checks run.
+      flows:
+        clientCredentials:
+          tokenUrl: https://sap-gw.meridian-mfg.example.com/sap/bc/sec/oauth2/token
+          scopes:
+            odata.read: Read access to SAP OData source collections
+    sapApiKey:
+      type: apiKey
+      description: >
+        Gateway API key issued per registered consumer. Used in place of the
+        OAuth bearer token for machine-to-machine calls that still present the
+        mandatory X.509 client certificate at the mutual-TLS terminating proxy.
+      in: header
+      name: APIKey
+  parameters:
+    CompanyCode:
+      name: companyCode
+      in: query
+      required: false
+      description: >
+        Canonical SAP company code filter. One of MC01, MC02 or MC03. When
+        omitted, all authorised company codes for the technical user are
+        returned.
+      schema:
+        type: string
+        enum:
+          - MC01
+          - MC02
+          - MC03
+      example: MC01
+    Top:
+      name: $top
+      in: query
+      required: false
+      description: Maximum number of records to return in this page (OData $top).
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 5000
+        default: 1000
+      example: 1000
+    Skip:
+      name: $skip
+      in: query
+      required: false
+      description: Number of records to skip for offset-based paging (OData $skip).
+      schema:
+        type: integer
+        minimum: 0
+        default: 0
+      example: 0
+    DeltaToken:
+      name: deltaToken
+      in: query
+      required: false
+      description: >
+        ODP delta token returned by the previous successful extraction. Omit
+        to run a full initialisation load. The token is only advanced on a
+        successful HTTP 200 so failed extractions are safely re-driven.
+      schema:
+        type: string
+        pattern: '^D[0-9]{8}T[0-9]{6}_[0-9]{6}$'
+      example: D20260707T093000_000123
+    FiscalYear:
+      name: fiscalYear
+      in: query
+      required: false
+      description: Fiscal year filter (SAP variant V3, April-March).
+      schema:
+        type: integer
+        minimum: 2000
+        maximum: 2099
+      example: 2026
+    PostingDateFrom:
+      name: postingDateFrom
+      in: query
+      required: false
+      description: Lower bound (inclusive) for posting date, ISO 8601 date.
+      schema:
+        type: string
+        format: date
+      example: '2026-07-01'
+    ControllingArea:
+      name: controllingArea
+      in: query
+      required: false
+      description: SAP controlling area filter (KOKRS).
+      schema:
+        type: string
+      example: '1000'
+    Plant:
+      name: plant
+      in: query
+      required: false
+      description: Plant filter (WERKS). One of PL01 through PL07.
+      schema:
+        type: string
+        enum:
+          - PL01
+          - PL02
+          - PL03
+          - PL04
+          - PL05
+          - PL06
+          - PL07
+      example: PL01
+  headers:
+    XRateLimitLimit:
+      description: Maximum number of extraction requests permitted in the current window.
+      schema:
+        type: integer
+      example: 48
+    XRateLimitRemaining:
+      description: Remaining requests in the current window.
+      schema:
+        type: integer
+      example: 47
+    XRateLimitReset:
+      description: Unix epoch seconds at which the rate-limit window resets.
+      schema:
+        type: integer
+      example: 1751880600
+    RetryAfter:
+      description: Seconds the client should wait before retrying.
+      schema:
+        type: integer
+      example: 1800
+  responses:
+    BadRequest:
+      description: Malformed request - invalid parameter, filter or delta token.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OdataError'
+          example:
+            error:
+              code: SY/530
+              message: Invalid deltaToken format.
+              target: deltaToken
+    Unauthorized:
+      description: Missing or invalid OAuth token, API key or client certificate.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OdataError'
+          example:
+            error:
+              code: SY/401
+              message: OAuth token expired or client certificate not presented.
+    Forbidden:
+      description: Authenticated user lacks SAP authorisation for the requested company code.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OdataError'
+          example:
+            error:
+              code: SY/403
+              message: Authorisation object F_BKPF_BUK check failed for company code MC02.
+              target: companyCode
+    TooManyRequests:
+      description: >
+        ODP frequency governor exceeded (max one delta per provider per 30
+        minutes) or RFC pool exhausted.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+        X-RateLimit-Limit:
+          $ref: '#/components/headers/XRateLimitLimit'
+        X-RateLimit-Remaining:
+          $ref: '#/components/headers/XRateLimitRemaining'
+        X-RateLimit-Reset:
+          $ref: '#/components/headers/XRateLimitReset'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OdataError'
+          example:
+            error:
+              code: SY/429
+              message: ODP delta frequency limit reached for provider ZFI_JE. Retry after window.
+    InternalError:
+      description: SAP Gateway or backend processing error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/OdataError'
+          example:
+            error:
+              code: SY/500
+              message: Backend short dump during CDS view execution.
+  schemas:
+    OdataError:
+      type: object
+      description: OData v2 error envelope returned by the SAP Gateway.
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - message
+          properties:
+            code:
+              type: string
+              description: SAP message class and number.
+            message:
+              type: string
+              description: Human-readable error text.
+            target:
+              type: string
+              description: Offending parameter or field, when applicable.
+    CollectionMeta:
+      type: object
+      description: Shared OData collection envelope metadata.
+      properties:
+        '@odata.context':
+          type: string
+          description: Metadata context URL for the returned entity set.
+        '@odata.count':
+          type: integer
+          description: Total number of records matching the query.
+        '@odata.deltaToken':
+          type: string
+          description: Delta token to pass on the next extraction to receive only changes.
+        '@odata.nextLink':
+          type: string
+          description: Continuation cursor URL when more records are available.
+    JournalEntry:
+      type: object
+      description: Universal Journal line item (ACDOCA with BKPF/BSEG context).
+      required:
+        - documentId
+        - companyCode
+        - fiscalYear
+        - glAccount
+        - amountLC
+        - postingDate
+      properties:
+        documentId:
+          type: string
+          description: Composite business key CONCAT(companyCode, fiscalYear, documentNumber). Maps to ACDOCA RBUKRS/GJAHR/BELNR.
+        companyCode:
+          type: string
+          description: SAP company code (ACDOCA RBUKRS).
+          enum:
+            - MC01
+            - MC02
+            - MC03
+        fiscalYear:
+          type: integer
+          description: Fiscal year (ACDOCA GJAHR).
+        documentNumber:
+          type: string
+          description: Accounting document number (ACDOCA BELNR).
+        lineItem:
+          type: integer
+          description: Document line item (ACDOCA BUZEI).
+        ledger:
+          type: string
+          description: Ledger (ACDOCA RLDNR); 0L is the leading ledger.
+        glAccount:
+          type: string
+          description: G/L account (ACDOCA RACCT).
+        documentType:
+          type: string
+          description: Document type (BKPF BLART).
+        postingDate:
+          type: string
+          format: date
+          description: Posting date (BKPF BUDAT).
+        documentDate:
+          type: string
+          format: date
+          description: Document date (BKPF BLDAT).
+        fiscalPeriod:
+          type: integer
+          description: Posting period 1-16 including special periods (BKPF MONAT).
+        amountLC:
+          type: number
+          format: double
+          description: Amount in local currency (ACDOCA HSL / BSEG DMBTR).
+        currencyLC:
+          type: string
+          description: Local currency ISO code (ACDOCA RHCUR).
+        amountTC:
+          type: number
+          format: double
+          description: Amount in transaction currency (BSEG WRBTR).
+        currencyTC:
+          type: string
+          description: Transaction currency ISO code (BSEG PSWSL).
+        debitCreditIndicator:
+          type: string
+          description: Debit/credit indicator S=debit, H=credit (BSEG).
+          enum:
+            - S
+            - H
+        costCentre:
+          type: string
+          description: Cost centre (ACDOCA KOSTL).
+        profitCentre:
+          type: string
+          description: Profit centre (ACDOCA PRCTR).
+        userName:
+          type: string
+          description: User who posted the document (BKPF USNAM).
+        transactionCode:
+          type: string
+          description: Transaction code used (BKPF TCODE).
+    JournalEntryCollection:
+      allOf:
+        - $ref: '#/components/schemas/CollectionMeta'
+        - type: object
+          properties:
+            value:
+              type: array
+              items:
+                $ref: '#/components/schemas/JournalEntry'
+    Payable:
+      type: object
+      description: Vendor open item (BSIK) with vendor master enrichment (LFA1/LFC1).
+      required:
+        - documentId
+        - companyCode
+        - vendorId
+        - amountLC
+      properties:
+        documentId:
+          type: string
+          description: Composite key companyCode-fiscalYear-documentNumber (BSIK BUKRS/GJAHR/BELNR).
+        companyCode:
+          type: string
+          enum:
+            - MC01
+            - MC02
+            - MC03
+        fiscalYear:
+          type: integer
+          description: Fiscal year (BSIK GJAHR).
+        documentNumber:
+          type: string
+          description: Document number (BSIK BELNR).
+        lineItem:
+          type: integer
+          description: Line item.
+        vendorId:
+          type: string
+          description: Vendor account number (BSIK LIFNR / LFA1 LIFNR).
+        vendorName:
+          type: string
+          description: Vendor name (LFA1 NAME1).
+        vendorCountry:
+          type: string
+          description: Vendor country key (LFA1 LAND1).
+        vendorGstin:
+          type: string
+          description: Vendor GST identification number (LFA1 STCD3).
+        reconciliationAccount:
+          type: string
+          description: Reconciliation G/L account (LFC1 AKONT).
+        paymentTerms:
+          type: string
+          description: Terms of payment key (LFC1 ZTERM).
+        amountLC:
+          type: number
+          format: double
+          description: Open amount in local currency.
+        currencyLC:
+          type: string
+          description: Local currency ISO code.
+        clearingDate:
+          type: string
+          format: date
+          nullable: true
+          description: Clearing date (BSIK AUGDT); null when open.
+        clearingDocument:
+          type: string
+          nullable: true
+          description: Clearing document (BSIK AUGBL); null when open.
+        assignment:
+          type: string
+          description: Assignment reference (BSIK ZUONR).
+        dueDate:
+          type: string
+          format: date
+          description: Net due date derived from baseline date and payment terms.
+        specialGlIndicator:
+          type: string
+          nullable: true
+          description: Special G/L indicator (BSIK UMSKZ).
+    PayableCollection:
+      allOf:
+        - $ref: '#/components/schemas/CollectionMeta'
+        - type: object
+          properties:
+            value:
+              type: array
+              items:
+                $ref: '#/components/schemas/Payable'
+    Receivable:
+      type: object
+      description: Customer open item (BSID) with customer master enrichment (KNA1/KNC1).
+      required:
+        - documentId
+        - companyCode
+        - customerId
+        - amountLC
+      properties:
+        documentId:
+          type: string
+          description: Composite key companyCode-fiscalYear-documentNumber (BSID BUKRS/GJAHR/BELNR).
+        companyCode:
+          type: string
+          enum:
+            - MC01
+            - MC02
+            - MC03
+        fiscalYear:
+          type: integer
+          description: Fiscal year (BSID GJAHR).
+        documentNumber:
+          type: string
+          description: Document number (BSID BELNR).
+        lineItem:
+          type: integer
+          description: Line item.
+        customerId:
+          type: string
+          description: Customer account number (BSID KUNNR / KNA1 KUNNR).
+        customerName:
+          type: string
+          description: Customer name (KNA1 NAME1).
+        customerCountry:
+          type: string
+          description: Customer country key (KNA1 LAND1).
+        customerGstin:
+          type: string
+          description: Customer GST identification number (KNA1 STCD3).
+        reconciliationAccount:
+          type: string
+          description: Reconciliation G/L account (KNC1 AKONT).
+        paymentTerms:
+          type: string
+          description: Terms of payment key (KNC1 ZTERM).
+        amountLC:
+          type: number
+          format: double
+          description: Open amount in local currency.
+        currencyLC:
+          type: string
+          description: Local currency ISO code.
+        dueDate:
+          type: string
+          format: date
+          description: Net due date.
+        dunningLevel:
+          type: integer
+          description: Dunning level.
+        clearingDate:
+          type: string
+          format: date
+          nullable: true
+          description: Clearing date (BSID AUGDT); null when open.
+        assignment:
+          type: string
+          description: Assignment reference (BSID ZUONR).
+    ReceivableCollection:
+      allOf:
+        - $ref: '#/components/schemas/CollectionMeta'
+        - type: object
+          properties:
+            value:
+              type: array
+              items:
+                $ref: '#/components/schemas/Receivable'
+    CostCentre:
+      type: object
+      description: Cost centre master (CSKS) with text (CSKT).
+      required:
+        - costCentreId
+        - controllingArea
+      properties:
+        costCentreId:
+          type: string
+          description: Cost centre (CSKS KOSTL).
+        controllingArea:
+          type: string
+          description: Controlling area (CSKS KOKRS).
+        companyCode:
+          type: string
+          enum:
+            - MC01
+            - MC02
+            - MC03
+        validFrom:
+          type: string
+          format: date
+          description: Valid-from date (CSKS DATAB).
+        validTo:
+          type: string
+          format: date
+          description: Valid-to date (CSKS DATBI).
+        name:
+          type: string
+          description: Cost centre name (CSKT KTEXT).
+        costCentreCategory:
+          type: string
+          description: Cost centre category (CSKS KOSAR).
+        responsiblePerson:
+          type: string
+          description: Person responsible (CSKS VERAK).
+        hierarchyNode:
+          type: string
+          description: Standard hierarchy node (CSKS KHINR).
+        profitCentre:
+          type: string
+          description: Assigned profit centre.
+    CostCentreCollection:
+      allOf:
+        - $ref: '#/components/schemas/CollectionMeta'
+        - type: object
+          properties:
+            value:
+              type: array
+              items:
+                $ref: '#/components/schemas/CostCentre'
+    ProfitCentre:
+      type: object
+      description: Profit centre master (CEPC) with text (CEPCT).
+      required:
+        - profitCentreId
+        - controllingArea
+      properties:
+        profitCentreId:
+          type: string
+          description: Profit centre (CEPC PRCTR).
+        controllingArea:
+          type: string
+          description: Controlling area (CEPC KOKRS).
+        companyCode:
+          type: string
+          enum:
+            - MC01
+            - MC02
+            - MC03
+        validFrom:
+          type: string
+          format: date
+          description: Valid-from date (CEPC DATAB).
+        validTo:
+          type: string
+          format: date
+          description: Valid-to date (CEPC DATBI).
+        name:
+          type: string
+          description: Profit centre name (CEPCT KTEXT).
+        segment:
+          type: string
+          description: Segment for segment reporting (CEPC SEGMENT).
+        hierarchyNode:
+          type: string
+          description: Standard hierarchy node (CEPC KHINR).
+    ProfitCentreCollection:
+      allOf:
+        - $ref: '#/components/schemas/CollectionMeta'
+        - type: object
+          properties:
+            value:
+              type: array
+              items:
+                $ref: '#/components/schemas/ProfitCentre'
+    MaterialLedger:
+      type: object
+      description: Material valuation (MBEW) with actual costing totals (COSP).
+      required:
+        - materialId
+        - valuationArea
+      properties:
+        materialId:
+          type: string
+          description: Material number (MBEW MATNR).
+        valuationArea:
+          type: string
+          description: Valuation area (MBEW BWKEY).
+        valuationType:
+          type: string
+          nullable: true
+          description: Valuation type (MBEW BWTAR).
+        companyCode:
+          type: string
+          enum:
+            - MC01
+            - MC02
+            - MC03
+        priceControl:
+          type: string
+          description: Price control S=standard, V=moving average (MBEW VPRSV).
+        standardPrice:
+          type: number
+          format: double
+          description: Standard price (MBEW STPRS).
+        movingAveragePrice:
+          type: number
+          format: double
+          description: Moving average price (MBEW VERPR).
+        priceUnit:
+          type: integer
+          description: Price unit (MBEW PEINH).
+        totalStock:
+          type: number
+          format: double
+          description: Total valuated stock (MBEW LBKUM).
+        totalValue:
+          type: number
+          format: double
+          description: Total stock value (MBEW SALK3).
+        currencyLC:
+          type: string
+          description: Local currency ISO code.
+        fiscalYear:
+          type: integer
+          description: Fiscal year (COSP GJAHR).
+        fiscalPeriod:
+          type: integer
+          description: Fiscal period.
+    MaterialLedgerCollection:
+      allOf:
+        - $ref: '#/components/schemas/CollectionMeta'
+        - type: object
+          properties:
+            value:
+              type: array
+              items:
+                $ref: '#/components/schemas/MaterialLedger'
+    PurchaseOrder:
+      type: object
+      description: Purchase order header (EKKO), item (EKPO) and schedule line (EKET).
+      required:
+        - purchaseOrderId
+        - itemNumber
+        - companyCode
+      properties:
+        purchaseOrderId:
+          type: string
+          description: Purchasing document number (EKKO EBELN).
+        itemNumber:
+          type: integer
+          description: Item number (EKPO EBELP).
+        companyCode:
+          type: string
+          enum:
+            - MC01
+            - MC02
+            - MC03
+        documentType:
+          type: string
+          description: Purchasing document type (EKKO BSART).
+        vendorId:
+          type: string
+          description: Vendor account number (EKKO LIFNR).
+        purchasingOrg:
+          type: string
+          description: Purchasing organisation (EKKO EKORG).
+        purchasingGroup:
+          type: string
+          description: Purchasing group (EKKO EKGRP).
+        materialId:
+          type: string
+          description: Material number (EKPO MATNR).
+        materialText:
+          type: string
+          description: Short text (EKPO TXZ01).
+        orderQuantity:
+          type: number
+          format: double
+          description: PO quantity (EKPO MENGE).
+        orderUnit:
+          type: string
+          description: Order unit of measure (EKPO MEINS).
+        netPrice:
+          type: number
+          format: double
+          description: Net price (EKPO NETPR).
+        priceUnit:
+          type: integer
+          description: Price unit (EKPO PEINH).
+        plant:
+          type: string
+          description: Plant (EKPO WERKS).
+        deliveryDate:
+          type: string
+          format: date
+          description: Schedule line delivery date (EKET EINDT).
+        goodsReceivedQuantity:
+          type: number
+          format: double
+          description: Goods received quantity (EKET WEMNG).
+        createdOn:
+          type: string
+          format: date
+          description: PO creation date (EKKO AEDAT).
+    PurchaseOrderCollection:
+      allOf:
+        - $ref: '#/components/schemas/CollectionMeta'
+        - type: object
+          properties:
+            value:
+              type: array
+              items:
+                $ref: '#/components/schemas/PurchaseOrder'
+    SalesOrder:
+      type: object
+      description: Sales order header (VBAK), item (VBAP) and schedule line (VBEP).
+      required:
+        - salesOrderId
+        - itemNumber
+        - companyCode
+      properties:
+        salesOrderId:
+          type: string
+          description: Sales document number (VBAK VBELN).
+        itemNumber:
+          type: integer
+          description: Item number (VBAP POSNR).
+        companyCode:
+          type: string
+          enum:
+            - MC01
+            - MC02
+            - MC03
+        documentType:
+          type: string
+          description: Sales document type (VBAK AUART).
+        salesOrg:
+          type: string
+          description: Sales organisation (VBAK VKORG).
+        distributionChannel:
+          type: string
+          description: Distribution channel (VBAK VTWEG).
+        division:
+          type: string
+          description: Division (VBAK SPART).
+        customerId:
+          type: string
+          description: Sold-to party (VBAK KUNNR).
+        materialId:
+          type: string
+          description: Material number (VBAP MATNR).
+        materialText:
+          type: string
+          description: Item description (VBAP ARKTX).
+        orderQuantity:
+          type: number
+          format: double
+          description: Cumulative order quantity (VBAP KWMENG).
+        salesUnit:
+          type: string
+          description: Sales unit of measure (VBAP VRKME).
+        netValue:
+          type: number
+          format: double
+          description: Net value of the item (VBAP NETWR).
+        currency:
+          type: string
+          description: Document currency (VBAP WAERK).
+        plant:
+          type: string
+          description: Plant (VBAP WERKS).
+        requestedDeliveryDate:
+          type: string
+          format: date
+          description: Requested delivery date (VBEP EDATU).
+        createdOn:
+          type: string
+          format: date
+          description: Order creation date (VBAK ERDAT).
+    SalesOrderCollection:
+      allOf:
+        - $ref: '#/components/schemas/CollectionMeta'
+        - type: object
+          properties:
+            value:
+              type: array
+              items:
+                $ref: '#/components/schemas/SalesOrder'
+    FixedAsset:
+      type: object
+      description: Asset master (ANLA), time-dependent data (ANLZ) and periodic values (ANLP).
+      required:
+        - assetId
+        - companyCode
+      properties:
+        assetId:
+          type: string
+          description: Main asset number (ANLA ANLN1).
+        assetSubNumber:
+          type: string
+          description: Asset sub-number (ANLA ANLN2).
+        companyCode:
+          type: string
+          enum:
+            - MC01
+            - MC02
+            - MC03
+        assetClass:
+          type: string
+          description: Asset class (ANLA ANLKL).
+        description:
+          type: string
+          description: Asset description (ANLA TXT50).
+        capitalisationDate:
+          type: string
+          format: date
+          description: Capitalisation date (ANLA AKTIV).
+        deactivationDate:
+          type: string
+          format: date
+          nullable: true
+          description: Deactivation date (ANLA DEAKT); null when active.
+        costCentre:
+          type: string
+          description: Assigned cost centre (ANLZ KOSTL).
+        profitCentre:
+          type: string
+          description: Assigned profit centre (ANLZ PRCTR).
+        plant:
+          type: string
+          description: Plant (ANLZ WERKS).
+        fiscalYear:
+          type: integer
+          description: Fiscal year (ANLP GJAHR).
+        accumulatedDepreciation:
+          type: number
+          format: double
+          description: Accumulated ordinary depreciation (ANLP).
+        plannedDepreciation:
+          type: number
+          format: double
+          description: Planned depreciation for the year (ANLP).
+        netBookValue:
+          type: number
+          format: double
+          description: Net book value.
+        currencyLC:
+          type: string
+          description: Local currency ISO code.
+    FixedAssetCollection:
+      allOf:
+        - $ref: '#/components/schemas/CollectionMeta'
+        - type: object
+          properties:
+            value:
+              type: array
+              items:
+                $ref: '#/components/schemas/FixedAsset'
+    BankStatement:
+      type: object
+      description: Electronic bank statement header (FEBKO) and line item (FEBEP).
+      required:
+        - statementId
+        - statementLineNumber
+        - companyCode
+      properties:
+        statementId:
+          type: string
+          description: Bank statement number (FEBKO).
+        statementLineNumber:
+          type: integer
+          description: Statement line item number (FEBEP).
+        companyCode:
+          type: string
+          enum:
+            - MC01
+            - MC02
+            - MC03
+        houseBankAccount:
+          type: string
+          description: House bank account identifier (FEBKO KONTS).
+        glAccount:
+          type: string
+          description: Posted G/L account.
+        fiscalYear:
+          type: integer
+          description: Fiscal year.
+        amount:
+          type: number
+          format: double
+          description: Line item amount (FEBEP KWBTR).
+        currency:
+          type: string
+          description: Statement currency ISO code.
+        valueDate:
+          type: string
+          format: date
+          description: Value date (FEBEP VALUT).
+        transactionType:
+          type: string
+          description: External transaction type / business transaction code.
+        documentReference:
+          type: string
+          description: Reference document number (FEBEP VBLNR).
+        postingStatus:
+          type: string
+          description: Posting status of the statement line.
+          enum:
+            - POSTED
+            - PARKED
+            - UNPOSTED
+    BankStatementCollection:
+      allOf:
+        - $ref: '#/components/schemas/CollectionMeta'
+        - type: object
+          properties:
+            value:
+              type: array
+              items:
+                $ref: '#/components/schemas/BankStatement'
+    BudgetActual:
+      type: object
+      description: CO plan/actual totals (COSP external, COSS internal).
+      required:
+        - objectId
+        - fiscalYear
+        - valueType
+      properties:
+        objectId:
+          type: string
+          description: CO object number (COSP/COSS OBJNR).
+        controllingArea:
+          type: string
+          description: Controlling area.
+        companyCode:
+          type: string
+          enum:
+            - MC01
+            - MC02
+            - MC03
+        costCentre:
+          type: string
+          description: Cost centre derived from the CO object.
+        costElement:
+          type: string
+          description: Cost element / account (COSP KSTAR).
+        fiscalYear:
+          type: integer
+          description: Fiscal year (COSP GJAHR).
+        fiscalPeriod:
+          type: integer
+          description: Fiscal period 1-16.
+        valueType:
+          type: string
+          description: Value type derived from WRTTP (ACTUAL=04, PLAN=01).
+          enum:
+            - ACTUAL
+            - PLAN
+        version:
+          type: string
+          description: Plan/actual version (COSP VERSN).
+        amount:
+          type: number
+          format: double
+          description: Period amount (COSP WKG001-WKG016 for the period).
+        currency:
+          type: string
+          description: Controlling area currency ISO code.
+        budgetAmount:
+          type: number
+          format: double
+          description: Corresponding plan amount for variance analysis.
+        variance:
+          type: number
+          format: double
+          description: Actual minus budget.
+    BudgetActualCollection:
+      allOf:
+        - $ref: '#/components/schemas/CollectionMeta'
+        - type: object
+          properties:
+            value:
+              type: array
+              items:
+                $ref: '#/components/schemas/BudgetActual'
+    Inventory:
+      type: object
+      description: Storage location stock (MARD) valued from MBEW.
+      required:
+        - materialId
+        - plant
+        - storageLocation
+      properties:
+        materialId:
+          type: string
+          description: Material number (MARD MATNR).
+        plant:
+          type: string
+          description: Plant (MARD WERKS).
+        storageLocation:
+          type: string
+          description: Storage location (MARD LGORT).
+        companyCode:
+          type: string
+          enum:
+            - MC01
+            - MC02
+            - MC03
+        unrestrictedStock:
+          type: number
+          format: double
+          description: Unrestricted-use stock (MARD LABST).
+        qualityInspectionStock:
+          type: number
+          format: double
+          description: Stock in quality inspection (MARD INSME).
+        blockedStock:
+          type: number
+          format: double
+          description: Blocked stock (MARD SPEME).
+        returnsStock:
+          type: number
+          format: double
+          description: Returns stock (MARD RETME).
+        baseUnit:
+          type: string
+          description: Base unit of measure.
+        valuationPrice:
+          type: number
+          format: double
+          description: Valuation price from MBEW (STPRS or VERPR per price control).
+        stockValue:
+          type: number
+          format: double
+          description: Extended stock value.
+        currencyLC:
+          type: string
+          description: Local currency ISO code.
+    InventoryCollection:
+      allOf:
+        - $ref: '#/components/schemas/CollectionMeta'
+        - type: object
+          properties:
+            value:
+              type: array
+              items:
+                $ref: '#/components/schemas/Inventory'

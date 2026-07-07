@@ -1,0 +1,375 @@
+{
+  "info": {
+    "_postman_id": "b2f1a4c0-9d3e-4f21-a6d8-493560b0d201",
+    "name": "FDE-9B FinSight Integration (SAP S/4HANA to Zetheta FinSight)",
+    "description": "Example requests for the FDE-9B integration between Meridian Manufacturing Ltd. SAP S/4HANA source endpoints (SRC-001..SRC-012) and Zetheta FinSight destination endpoints (DST-001..DST-012). Configure the environment variables sap_base_url, finsight_base_url and access_token before running. The SAP folder authenticates with an OAuth 2.0 bearer token plus X.509 mutual TLS at the gateway; the FinSight folder uses OAuth 2.0 client_credentials.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "auth": {
+    "type": "bearer",
+    "bearer": [
+      {
+        "key": "token",
+        "value": "{{access_token}}",
+        "type": "string"
+      }
+    ]
+  },
+  "variable": [
+    {
+      "key": "sap_base_url",
+      "value": "https://sap-gw.meridian-mfg.example.com/sap/odata/v2"
+    },
+    {
+      "key": "finsight_base_url",
+      "value": "https://api.finsight.zetheta.example.com/api/v2"
+    },
+    {
+      "key": "access_token",
+      "value": ""
+    },
+    {
+      "key": "finsight_tenant",
+      "value": "MERIDIAN-MC01"
+    },
+    {
+      "key": "company_code",
+      "value": "MC01"
+    }
+  ],
+  "item": [
+    {
+      "name": "0. Authentication",
+      "description": "Token acquisition for both systems. Run the relevant request first; the test script stores the token in the access_token collection variable.",
+      "item": [
+        {
+          "name": "SAP OAuth 2.0 Token (client_credentials)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var json = pm.response.json();",
+                  "if (json.access_token) {",
+                  "  pm.collectionVariables.set('access_token', json.access_token);",
+                  "  pm.test('SAP token acquired', function () { pm.expect(json.access_token).to.be.a('string'); });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/x-www-form-urlencoded" }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "grant_type", "value": "client_credentials" },
+                { "key": "client_id", "value": "ZFINSIGHT_EXTRACT" },
+                { "key": "client_secret", "value": "{{sap_client_secret}}" },
+                { "key": "scope", "value": "odata.read" }
+              ]
+            },
+            "url": {
+              "raw": "https://sap-gw.meridian-mfg.example.com/sap/bc/sec/oauth2/token",
+              "protocol": "https",
+              "host": ["sap-gw", "meridian-mfg", "example", "com"],
+              "path": ["sap", "bc", "sec", "oauth2", "token"]
+            },
+            "description": "SAP OAuth 2.0 token endpoint. The call must additionally present the registered X.509 client certificate at the mutual-TLS terminating proxy (configure under Postman Settings > Certificates for host sap-gw.meridian-mfg.example.com)."
+          }
+        },
+        {
+          "name": "FinSight OAuth 2.0 Token (client_credentials)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "var json = pm.response.json();",
+                  "if (json.access_token) {",
+                  "  pm.collectionVariables.set('access_token', json.access_token);",
+                  "  pm.test('FinSight token acquired', function () { pm.expect(json.access_token).to.be.a('string'); });",
+                  "}"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/x-www-form-urlencoded" }
+            ],
+            "body": {
+              "mode": "urlencoded",
+              "urlencoded": [
+                { "key": "grant_type", "value": "client_credentials" },
+                { "key": "client_id", "value": "{{finsight_client_id}}" },
+                { "key": "client_secret", "value": "{{finsight_client_secret}}" },
+                { "key": "scope", "value": "finsight.write finsight.read" }
+              ]
+            },
+            "url": {
+              "raw": "https://auth.finsight.zetheta.example.com/oauth2/token",
+              "protocol": "https",
+              "host": ["auth", "finsight", "zetheta", "example", "com"],
+              "path": ["oauth2", "token"]
+            },
+            "description": "FinSight OAuth 2.0 client_credentials token endpoint. Returns a 3600s access token and a refresh token."
+          }
+        }
+      ]
+    },
+    {
+      "name": "1. SAP Source Endpoints",
+      "description": "SAP S/4HANA OData v2 source extraction endpoints (SRC-001..SRC-012). Read-only GET with OData pagination and ODP delta tokens.",
+      "item": [
+        {
+          "name": "SRC-001 GET Journal Entries",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "APIKey", "value": "{{sap_api_key}}", "description": "Optional gateway API key alternative to the bearer token." }
+            ],
+            "url": {
+              "raw": "{{sap_base_url}}/journal-entries?companyCode={{company_code}}&$top=100&$skip=0&deltaToken=D20260707T093000_000123",
+              "host": ["{{sap_base_url}}"],
+              "path": ["journal-entries"],
+              "query": [
+                { "key": "companyCode", "value": "{{company_code}}" },
+                { "key": "$top", "value": "100" },
+                { "key": "$skip", "value": "0" },
+                { "key": "deltaToken", "value": "D20260707T093000_000123" }
+              ]
+            },
+            "description": "Extract General Ledger journal entries from ACDOCA. Omit deltaToken for a full initialisation load."
+          }
+        },
+        {
+          "name": "SRC-002 GET Payables",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Accept", "value": "application/json" }],
+            "url": {
+              "raw": "{{sap_base_url}}/payables?companyCode={{company_code}}&$top=100",
+              "host": ["{{sap_base_url}}"],
+              "path": ["payables"],
+              "query": [
+                { "key": "companyCode", "value": "{{company_code}}" },
+                { "key": "$top", "value": "100" }
+              ]
+            },
+            "description": "Extract Accounts Payable open items (BSIK with LFA1/LFC1 enrichment)."
+          }
+        },
+        {
+          "name": "SRC-003 GET Receivables",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Accept", "value": "application/json" }],
+            "url": {
+              "raw": "{{sap_base_url}}/receivables?companyCode={{company_code}}&$top=100",
+              "host": ["{{sap_base_url}}"],
+              "path": ["receivables"],
+              "query": [
+                { "key": "companyCode", "value": "{{company_code}}" },
+                { "key": "$top", "value": "100" }
+              ]
+            },
+            "description": "Extract Accounts Receivable open items (BSID with KNA1/KNC1 enrichment)."
+          }
+        },
+        {
+          "name": "SRC-004 GET Cost Centres",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Accept", "value": "application/json" }],
+            "url": {
+              "raw": "{{sap_base_url}}/cost-centres?controllingArea=1000&$top=100",
+              "host": ["{{sap_base_url}}"],
+              "path": ["cost-centres"],
+              "query": [
+                { "key": "controllingArea", "value": "1000" },
+                { "key": "$top", "value": "100" }
+              ]
+            },
+            "description": "Extract cost centre master (CSKS/CSKT)."
+          }
+        },
+        {
+          "name": "SRC-007 GET Purchase Orders",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Accept", "value": "application/json" }],
+            "url": {
+              "raw": "{{sap_base_url}}/purchase-orders?companyCode={{company_code}}&plant=PL01&$top=100",
+              "host": ["{{sap_base_url}}"],
+              "path": ["purchase-orders"],
+              "query": [
+                { "key": "companyCode", "value": "{{company_code}}" },
+                { "key": "plant", "value": "PL01" },
+                { "key": "$top", "value": "100" }
+              ]
+            },
+            "description": "Extract purchase orders (EKKO/EKPO/EKET)."
+          }
+        },
+        {
+          "name": "SRC-012 GET Inventory",
+          "request": {
+            "method": "GET",
+            "header": [{ "key": "Accept", "value": "application/json" }],
+            "url": {
+              "raw": "{{sap_base_url}}/inventory?companyCode={{company_code}}&plant=PL01&$top=100",
+              "host": ["{{sap_base_url}}"],
+              "path": ["inventory"],
+              "query": [
+                { "key": "companyCode", "value": "{{company_code}}" },
+                { "key": "plant", "value": "PL01" },
+                { "key": "$top", "value": "100" }
+              ]
+            },
+            "description": "Extract storage-location stock (MARD valued from MBEW)."
+          }
+        }
+      ]
+    },
+    {
+      "name": "2. FinSight Destination Endpoints",
+      "description": "Zetheta FinSight destination load endpoints (DST-001..DST-012). POST create with Idempotency-Key, GET list with cursor pagination.",
+      "item": [
+        {
+          "name": "DST-001 POST Journal Entry",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "MC01-2026-0100004821" },
+              { "key": "X-FinSight-Tenant", "value": "{{finsight_tenant}}" },
+              { "key": "X-Callback-Url", "value": "https://loader.integration.meridian-mfg.example.com/webhooks/finsight-load", "description": "Optional async load-confirmation webhook." }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"documentId\": \"MC01-2026-0100004821\",\n  \"tenantId\": \"MERIDIAN-MC01\",\n  \"companyCode\": \"MC01\",\n  \"fiscalYear\": 2026,\n  \"fiscalPeriod\": 4,\n  \"calendarMonth\": \"2026-07\",\n  \"glAccount\": \"400000\",\n  \"glAccountName\": \"Raw material consumption\",\n  \"postingDate\": \"2026-07-07\",\n  \"amountLC\": 152340.75,\n  \"currencyLC\": \"INR\",\n  \"debitCredit\": \"DEBIT\",\n  \"costCentre\": \"MC01-IT\",\n  \"profitCentre\": \"PC-PL01\",\n  \"sourceDocumentNumber\": \"0100004821\"\n}"
+            },
+            "url": {
+              "raw": "{{finsight_base_url}}/journal-entries",
+              "host": ["{{finsight_base_url}}"],
+              "path": ["journal-entries"]
+            },
+            "description": "Create/upsert a transformed journal entry. Idempotency-Key carries documentId."
+          }
+        },
+        {
+          "name": "DST-001 GET Journal Entries",
+          "request": {
+            "method": "GET",
+            "header": [
+              { "key": "Accept", "value": "application/json" },
+              { "key": "X-FinSight-Tenant", "value": "{{finsight_tenant}}" }
+            ],
+            "url": {
+              "raw": "{{finsight_base_url}}/journal-entries?pageSize=100&fiscalYear=2026",
+              "host": ["{{finsight_base_url}}"],
+              "path": ["journal-entries"],
+              "query": [
+                { "key": "pageSize", "value": "100" },
+                { "key": "fiscalYear", "value": "2026" }
+              ]
+            },
+            "description": "List journal entries for the tenant, cursor-paginated."
+          }
+        },
+        {
+          "name": "DST-002 POST Payable",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "MC01-2026-1900002011" },
+              { "key": "X-FinSight-Tenant", "value": "{{finsight_tenant}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"documentId\": \"MC01-2026-1900002011\",\n  \"tenantId\": \"MERIDIAN-MC01\",\n  \"vendorId\": \"100234\",\n  \"vendorName\": \"Bharat Precision Castings Pvt Ltd\",\n  \"amountLC\": 89000.00,\n  \"currencyLC\": \"INR\",\n  \"dueDate\": \"2026-08-06\",\n  \"ageingBucket\": \"CURRENT\",\n  \"postingDate\": \"2026-07-07\"\n}"
+            },
+            "url": {
+              "raw": "{{finsight_base_url}}/payables",
+              "host": ["{{finsight_base_url}}"],
+              "path": ["payables"]
+            },
+            "description": "Create/upsert a transformed payable."
+          }
+        },
+        {
+          "name": "DST-003 POST Receivable",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "MC03-2026-1800003345" },
+              { "key": "X-FinSight-Tenant", "value": "MERIDIAN-MC03" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"documentId\": \"MC03-2026-1800003345\",\n  \"tenantId\": \"MERIDIAN-MC03\",\n  \"customerId\": \"200567\",\n  \"customerName\": \"Southern Auto Systems Ltd\",\n  \"amountLC\": 245600.00,\n  \"currencyLC\": \"INR\",\n  \"dueDate\": \"2026-08-21\",\n  \"dunningLevel\": 0,\n  \"ageingBucket\": \"CURRENT\"\n}"
+            },
+            "url": {
+              "raw": "{{finsight_base_url}}/receivables",
+              "host": ["{{finsight_base_url}}"],
+              "path": ["receivables"]
+            },
+            "description": "Create/upsert a transformed receivable."
+          }
+        },
+        {
+          "name": "DST-004 POST Cost Centre",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "MC01-IT" },
+              { "key": "X-FinSight-Tenant", "value": "{{finsight_tenant}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"costCentreId\": \"MC01-IT\",\n  \"tenantId\": \"MERIDIAN-MC01\",\n  \"name\": \"IT Shared Services Pune\",\n  \"hierarchyLevel1\": \"Meridian\",\n  \"hierarchyLevel2\": \"Corporate Functions\",\n  \"hierarchyLevel3\": \"IT\",\n  \"profitCentre\": \"PC-PL01\",\n  \"validFrom\": \"2020-04-01\"\n}"
+            },
+            "url": {
+              "raw": "{{finsight_base_url}}/cost-centres",
+              "host": ["{{finsight_base_url}}"],
+              "path": ["cost-centres"]
+            },
+            "description": "Create/upsert transformed cost centre master with flattened hierarchy."
+          }
+        },
+        {
+          "name": "DST-007 POST Purchase Order",
+          "request": {
+            "method": "POST",
+            "header": [
+              { "key": "Content-Type", "value": "application/json" },
+              { "key": "Idempotency-Key", "value": "4500001234-10" },
+              { "key": "X-FinSight-Tenant", "value": "{{finsight_tenant}}" }
+            ],
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"recordId\": \"4500001234-10\",\n  \"tenantId\": \"MERIDIAN-MC01\",\n  \"purchaseOrderId\": \"4500001234\",\n  \"itemNumber\": 10,\n  \"vendorId\": \"100234\",\n  \"materialId\": \"102345\",\n  \"netValue\": 727500.00,\n  \"currency\": \"INR\",\n  \"plant\": \"PL01\",\n  \"deliveryDate\": \"2026-07-20\"\n}"
+            },
+            "url": {
+              "raw": "{{finsight_base_url}}/purchase-orders",
+              "host": ["{{finsight_base_url}}"],
+              "path": ["purchase-orders"]
+            },
+            "description": "Create/upsert a transformed purchase order line."
+          }
+        }
+      ]
+    }
+  ]
+}

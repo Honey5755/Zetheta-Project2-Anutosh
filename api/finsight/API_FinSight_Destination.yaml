@@ -1,0 +1,2347 @@
+openapi: 3.0.3
+info:
+  title: Zetheta FinSight Destination Load API
+  version: 2.0.0
+  description: >
+    Destination-load contract for the FDE-9B integration into Zetheta
+    FinSight 4.2 (AWS Mumbai `ap-south-1`). This specification defines the
+    twelve destination resources (DST-001 through DST-012) written by the
+    FinSight Loader component after transformation of SAP S/4HANA source data.
+
+
+    Every resource exposes a **POST** (create/upsert a record) and a **GET**
+    (list records) operation under the versioned base path `/api/v2/`.
+
+
+    ## Idempotency
+
+    Each POST accepts an `Idempotency-Key` header carrying the transformed
+    record business key (for General Ledger this is `documentId`). FinSight
+    stores the key for 24 hours; a repeated POST with the same key and an
+    identical payload returns the original result (HTTP 200) rather than
+    creating a duplicate, while the same key with a divergent payload returns
+    `409 DUPLICATE_ENTRY`. This makes the at-least-once delivery from Kafka
+    safe.
+
+
+    ## Authentication
+
+    FinSight uses OAuth 2.0 with the `client_credentials` grant. The Loader
+    exchanges its client id and secret at the token endpoint for a short-lived
+    (3600s) bearer access token plus a refresh token. On `401 TOKEN_EXPIRED`
+    the Loader silently refreshes using the `refresh_token` grant and replays
+    the request; on `401 INVALID_TOKEN` it re-authenticates from scratch and
+    raises a security alert. Tokens are scoped per resource (for example
+    `finsight.journal-entries.write`).
+
+
+    ## Tenancy and data residency
+
+    Every request is tenant-scoped via the `X-FinSight-Tenant` header, one of
+    `MERIDIAN-MC01`, `MERIDIAN-MC02`, `MERIDIAN-MC03`, matching the SAP company
+    code routing. All processing and storage remain within `ap-south-1` per RBI
+    data-residency requirements.
+
+
+    ## Asynchronous load confirmation
+
+    A POST is accepted synchronously (`201`) but the durable commit into the
+    FinSight analytical store is confirmed asynchronously. Clients may register
+    a webhook `callbackUrl`; FinSight then calls back with the final load
+    outcome (COMMITTED or REJECTED) per record. See the callback definition on
+    the create operations.
+
+
+    ## Rate limiting
+
+    Responses carry `X-RateLimit-Limit`, `X-RateLimit-Remaining` and
+    `X-RateLimit-Reset`. On `429 RATE_LIMITED` clients must honour the
+    `Retry-After` header and apply exponential backoff with jitter.
+  contact:
+    name: Zetheta FinSight Platform Engineering
+    email: platform-eng@zetheta.example.com
+  license:
+    name: Proprietary - Zetheta Algorithms Private Limited
+    url: https://zetheta.example.com/legal/api-terms
+  termsOfService: https://zetheta.example.com/legal/api-terms
+servers:
+  - url: https://api.finsight.zetheta.example.com/api/v2
+    description: FinSight production (AWS ap-south-1)
+  - url: https://api.staging.finsight.zetheta.example.com/api/v2
+    description: FinSight staging (AWS ap-south-1)
+tags:
+  - name: Journal Entries
+    description: General Ledger journal entries (DST-001).
+  - name: Payables
+    description: Accounts Payable open items (DST-002).
+  - name: Receivables
+    description: Accounts Receivable open items (DST-003).
+  - name: Cost Centres
+    description: Cost centre master (DST-004).
+  - name: Profit Centres
+    description: Profit centre master (DST-005).
+  - name: Material Ledger
+    description: Material ledger valuation (DST-006).
+  - name: Purchase Orders
+    description: Purchase orders (DST-007).
+  - name: Sales Orders
+    description: Sales orders (DST-008).
+  - name: Fixed Assets
+    description: Fixed assets (DST-009).
+  - name: Bank Statements
+    description: Bank statements (DST-010).
+  - name: Budget Actuals
+    description: Budget versus actual totals (DST-011).
+  - name: Inventory
+    description: Inventory stock (DST-012).
+security:
+  - finsightOAuth2:
+      - finsight.write
+      - finsight.read
+paths:
+  /journal-entries:
+    post:
+      operationId: createJournalEntry
+      summary: Create a journal entry (DST-001)
+      description: >
+        Upserts a transformed General Ledger journal entry into FinSight. The
+        Idempotency-Key must carry the record `documentId`.
+      tags:
+        - Journal Entries
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/CallbackUrl'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/JournalEntryInput'
+            example:
+              documentId: MC01-2026-0100004821
+              tenantId: MERIDIAN-MC01
+              companyCode: MC01
+              fiscalYear: 2026
+              fiscalPeriod: 4
+              calendarMonth: '2026-07'
+              glAccount: '400000'
+              glAccountName: Raw material consumption
+              postingDate: '2026-07-07'
+              amountLC: 152340.75
+              currencyLC: INR
+              debitCredit: DEBIT
+              costCentre: MC01-IT
+              profitCentre: PC-PL01
+              sourceDocumentNumber: '0100004821'
+      responses:
+        '201':
+          $ref: '#/components/responses/JournalEntryCreated'
+        '200':
+          $ref: '#/components/responses/JournalEntryIdempotentReplay'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+      callbacks:
+        loadConfirmation:
+          $ref: '#/components/callbacks/LoadConfirmation'
+    get:
+      operationId: listJournalEntries
+      summary: List journal entries (DST-001)
+      description: Returns a cursor-paginated list of journal entries for the tenant.
+      tags:
+        - Journal Entries
+      parameters:
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Cursor'
+        - $ref: '#/components/parameters/FiscalYearQuery'
+      responses:
+        '200':
+          description: Journal entry list page.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/JournalEntryList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /payables:
+    post:
+      operationId: createPayable
+      summary: Create a payable (DST-002)
+      description: Upserts a transformed Accounts Payable open item into FinSight.
+      tags:
+        - Payables
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/CallbackUrl'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PayableInput'
+            example:
+              documentId: MC01-2026-1900002011
+              tenantId: MERIDIAN-MC01
+              vendorId: '100234'
+              vendorName: Bharat Precision Castings Pvt Ltd
+              amountLC: 89000.00
+              currencyLC: INR
+              dueDate: '2026-08-06'
+              ageingBucket: CURRENT
+              postingDate: '2026-07-07'
+      responses:
+        '201':
+          $ref: '#/components/responses/RecordCreated'
+        '200':
+          $ref: '#/components/responses/RecordIdempotentReplay'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+      callbacks:
+        loadConfirmation:
+          $ref: '#/components/callbacks/LoadConfirmation'
+    get:
+      operationId: listPayables
+      summary: List payables (DST-002)
+      description: Returns a cursor-paginated list of payables for the tenant.
+      tags:
+        - Payables
+      parameters:
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Payables list page.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PayableList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /receivables:
+    post:
+      operationId: createReceivable
+      summary: Create a receivable (DST-003)
+      description: Upserts a transformed Accounts Receivable open item into FinSight.
+      tags:
+        - Receivables
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/CallbackUrl'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ReceivableInput'
+            example:
+              documentId: MC03-2026-1800003345
+              tenantId: MERIDIAN-MC03
+              customerId: '200567'
+              customerName: Southern Auto Systems Ltd
+              amountLC: 245600.00
+              currencyLC: INR
+              dueDate: '2026-08-21'
+              dunningLevel: 0
+              ageingBucket: CURRENT
+      responses:
+        '201':
+          $ref: '#/components/responses/RecordCreated'
+        '200':
+          $ref: '#/components/responses/RecordIdempotentReplay'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+      callbacks:
+        loadConfirmation:
+          $ref: '#/components/callbacks/LoadConfirmation'
+    get:
+      operationId: listReceivables
+      summary: List receivables (DST-003)
+      description: Returns a cursor-paginated list of receivables for the tenant.
+      tags:
+        - Receivables
+      parameters:
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Receivables list page.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ReceivableList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /cost-centres:
+    post:
+      operationId: createCostCentre
+      summary: Create a cost centre (DST-004)
+      description: Upserts transformed cost centre master data into FinSight.
+      tags:
+        - Cost Centres
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/CallbackUrl'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CostCentreInput'
+            example:
+              costCentreId: MC01-IT
+              tenantId: MERIDIAN-MC01
+              name: IT Shared Services Pune
+              hierarchyLevel1: Meridian
+              hierarchyLevel2: Corporate Functions
+              hierarchyLevel3: IT
+              profitCentre: PC-PL01
+              validFrom: '2020-04-01'
+      responses:
+        '201':
+          $ref: '#/components/responses/RecordCreated'
+        '200':
+          $ref: '#/components/responses/RecordIdempotentReplay'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+      callbacks:
+        loadConfirmation:
+          $ref: '#/components/callbacks/LoadConfirmation'
+    get:
+      operationId: listCostCentres
+      summary: List cost centres (DST-004)
+      description: Returns a cursor-paginated list of cost centres for the tenant.
+      tags:
+        - Cost Centres
+      parameters:
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Cost centre list page.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/CostCentreList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /profit-centres:
+    post:
+      operationId: createProfitCentre
+      summary: Create a profit centre (DST-005)
+      description: Upserts transformed profit centre master data into FinSight.
+      tags:
+        - Profit Centres
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/CallbackUrl'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ProfitCentreInput'
+            example:
+              profitCentreId: PC-PL01
+              tenantId: MERIDIAN-MC01
+              name: Pune Engine Components
+              segment: SEG-AUTO
+              hierarchyLevel1: Meridian
+              hierarchyLevel2: Automotive
+              validFrom: '2020-04-01'
+      responses:
+        '201':
+          $ref: '#/components/responses/RecordCreated'
+        '200':
+          $ref: '#/components/responses/RecordIdempotentReplay'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+      callbacks:
+        loadConfirmation:
+          $ref: '#/components/callbacks/LoadConfirmation'
+    get:
+      operationId: listProfitCentres
+      summary: List profit centres (DST-005)
+      description: Returns a cursor-paginated list of profit centres for the tenant.
+      tags:
+        - Profit Centres
+      parameters:
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Profit centre list page.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfitCentreList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /material-ledger:
+    post:
+      operationId: createMaterialLedgerRecord
+      summary: Create a material ledger record (DST-006)
+      description: Upserts a transformed material valuation record into FinSight.
+      tags:
+        - Material Ledger
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/CallbackUrl'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/MaterialLedgerInput'
+            example:
+              recordId: MC01-102345-PL01-2026-004
+              tenantId: MERIDIAN-MC01
+              materialId: '102345'
+              plant: PL01
+              standardPrice: 145.50
+              movingAveragePrice: 148.20
+              totalValue: 1804200.00
+              currencyLC: INR
+              fiscalPeriod: 4
+      responses:
+        '201':
+          $ref: '#/components/responses/RecordCreated'
+        '200':
+          $ref: '#/components/responses/RecordIdempotentReplay'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+      callbacks:
+        loadConfirmation:
+          $ref: '#/components/callbacks/LoadConfirmation'
+    get:
+      operationId: listMaterialLedgerRecords
+      summary: List material ledger records (DST-006)
+      description: Returns a cursor-paginated list of material ledger records.
+      tags:
+        - Material Ledger
+      parameters:
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Material ledger list page.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MaterialLedgerList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /purchase-orders:
+    post:
+      operationId: createPurchaseOrder
+      summary: Create a purchase order (DST-007)
+      description: Upserts a transformed purchase order line into FinSight.
+      tags:
+        - Purchase Orders
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/CallbackUrl'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/PurchaseOrderInput'
+            example:
+              recordId: '4500001234-10'
+              tenantId: MERIDIAN-MC01
+              purchaseOrderId: '4500001234'
+              itemNumber: 10
+              vendorId: '100234'
+              materialId: '102345'
+              netValue: 727500.00
+              currency: INR
+              plant: PL01
+              deliveryDate: '2026-07-20'
+      responses:
+        '201':
+          $ref: '#/components/responses/RecordCreated'
+        '200':
+          $ref: '#/components/responses/RecordIdempotentReplay'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+      callbacks:
+        loadConfirmation:
+          $ref: '#/components/callbacks/LoadConfirmation'
+    get:
+      operationId: listPurchaseOrders
+      summary: List purchase orders (DST-007)
+      description: Returns a cursor-paginated list of purchase orders.
+      tags:
+        - Purchase Orders
+      parameters:
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Purchase order list page.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PurchaseOrderList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /sales-orders:
+    post:
+      operationId: createSalesOrder
+      summary: Create a sales order (DST-008)
+      description: Upserts a transformed sales order line into FinSight.
+      tags:
+        - Sales Orders
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/CallbackUrl'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/SalesOrderInput'
+            example:
+              recordId: '0000012345-10'
+              tenantId: MERIDIAN-MC03
+              salesOrderId: '0000012345'
+              itemNumber: 10
+              customerId: '200567'
+              materialId: '205678'
+              netValue: 3600000.00
+              currency: INR
+              plant: PL06
+              requestedDeliveryDate: '2026-07-25'
+      responses:
+        '201':
+          $ref: '#/components/responses/RecordCreated'
+        '200':
+          $ref: '#/components/responses/RecordIdempotentReplay'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+      callbacks:
+        loadConfirmation:
+          $ref: '#/components/callbacks/LoadConfirmation'
+    get:
+      operationId: listSalesOrders
+      summary: List sales orders (DST-008)
+      description: Returns a cursor-paginated list of sales orders.
+      tags:
+        - Sales Orders
+      parameters:
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Sales order list page.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SalesOrderList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /fixed-assets:
+    post:
+      operationId: createFixedAsset
+      summary: Create a fixed asset (DST-009)
+      description: Upserts a transformed fixed asset record into FinSight.
+      tags:
+        - Fixed Assets
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/CallbackUrl'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/FixedAssetInput'
+            example:
+              recordId: MC01-000000012345-0000
+              tenantId: MERIDIAN-MC01
+              assetId: '000000012345'
+              description: CNC Machining Centre PL01
+              costCentre: MC01-PR
+              netBookValue: 3750000.00
+              currencyLC: INR
+              capitalisationDate: '2022-05-15'
+      responses:
+        '201':
+          $ref: '#/components/responses/RecordCreated'
+        '200':
+          $ref: '#/components/responses/RecordIdempotentReplay'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+      callbacks:
+        loadConfirmation:
+          $ref: '#/components/callbacks/LoadConfirmation'
+    get:
+      operationId: listFixedAssets
+      summary: List fixed assets (DST-009)
+      description: Returns a cursor-paginated list of fixed assets.
+      tags:
+        - Fixed Assets
+      parameters:
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Fixed asset list page.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/FixedAssetList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /bank-statements:
+    post:
+      operationId: createBankStatement
+      summary: Create a bank statement line (DST-010)
+      description: Upserts a transformed bank statement line into FinSight.
+      tags:
+        - Bank Statements
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/CallbackUrl'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BankStatementInput'
+            example:
+              recordId: MC01-00000042-1
+              tenantId: MERIDIAN-MC01
+              statementId: '00000042'
+              statementLineNumber: 1
+              glAccount: '113100'
+              amount: 152340.75
+              currency: INR
+              valueDate: '2026-07-07'
+      responses:
+        '201':
+          $ref: '#/components/responses/RecordCreated'
+        '200':
+          $ref: '#/components/responses/RecordIdempotentReplay'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+      callbacks:
+        loadConfirmation:
+          $ref: '#/components/callbacks/LoadConfirmation'
+    get:
+      operationId: listBankStatements
+      summary: List bank statements (DST-010)
+      description: Returns a cursor-paginated list of bank statement lines.
+      tags:
+        - Bank Statements
+      parameters:
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Bank statement list page.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BankStatementList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /budget-actuals:
+    post:
+      operationId: createBudgetActual
+      summary: Create a budget/actual record (DST-011)
+      description: Upserts a transformed CO plan/actual total into FinSight.
+      tags:
+        - Budget Actuals
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/CallbackUrl'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BudgetActualInput'
+            example:
+              recordId: MC01-MC01IT-2026-004-ACTUAL
+              tenantId: MERIDIAN-MC01
+              costCentre: MC01-IT
+              costElement: '400000'
+              fiscalPeriod: 4
+              valueType: ACTUAL
+              amount: 152340.75
+              budgetAmount: 200000.00
+              variance: -47659.25
+              currency: INR
+      responses:
+        '201':
+          $ref: '#/components/responses/RecordCreated'
+        '200':
+          $ref: '#/components/responses/RecordIdempotentReplay'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+      callbacks:
+        loadConfirmation:
+          $ref: '#/components/callbacks/LoadConfirmation'
+    get:
+      operationId: listBudgetActuals
+      summary: List budget/actual records (DST-011)
+      description: Returns a cursor-paginated list of budget/actual records.
+      tags:
+        - Budget Actuals
+      parameters:
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Budget/actual list page.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BudgetActualList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+  /inventory:
+    post:
+      operationId: createInventoryRecord
+      summary: Create an inventory record (DST-012)
+      description: Upserts a transformed inventory stock record into FinSight.
+      tags:
+        - Inventory
+      parameters:
+        - $ref: '#/components/parameters/IdempotencyKey'
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/CallbackUrl'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/InventoryInput'
+            example:
+              recordId: MC01-102345-PL01-0001
+              tenantId: MERIDIAN-MC01
+              materialId: '102345'
+              plant: PL01
+              storageLocation: '0001'
+              unrestrictedStock: 8400.000
+              stockValue: 1222200.00
+              currencyLC: INR
+      responses:
+        '201':
+          $ref: '#/components/responses/RecordCreated'
+        '200':
+          $ref: '#/components/responses/RecordIdempotentReplay'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+        '504':
+          $ref: '#/components/responses/GatewayTimeout'
+      callbacks:
+        loadConfirmation:
+          $ref: '#/components/callbacks/LoadConfirmation'
+    get:
+      operationId: listInventoryRecords
+      summary: List inventory records (DST-012)
+      description: Returns a cursor-paginated list of inventory records.
+      tags:
+        - Inventory
+      parameters:
+        - $ref: '#/components/parameters/Tenant'
+        - $ref: '#/components/parameters/PageSize'
+        - $ref: '#/components/parameters/Cursor'
+      responses:
+        '200':
+          description: Inventory list page.
+          headers:
+            X-RateLimit-Limit:
+              $ref: '#/components/headers/XRateLimitLimit'
+            X-RateLimit-Remaining:
+              $ref: '#/components/headers/XRateLimitRemaining'
+            X-RateLimit-Reset:
+              $ref: '#/components/headers/XRateLimitReset'
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InventoryList'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '429':
+          $ref: '#/components/responses/TooManyRequests'
+        '500':
+          $ref: '#/components/responses/InternalError'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
+components:
+  securitySchemes:
+    finsightOAuth2:
+      type: oauth2
+      description: >
+        Zetheta FinSight OAuth 2.0 authorization server, `client_credentials`
+        grant. The FinSight Loader exchanges client id/secret for a 3600s
+        access token plus a refresh token, refreshing on TOKEN_EXPIRED via the
+        refresh_token grant. Scopes are granted per resource.
+      flows:
+        clientCredentials:
+          tokenUrl: https://auth.finsight.zetheta.example.com/oauth2/token
+          refreshUrl: https://auth.finsight.zetheta.example.com/oauth2/token
+          scopes:
+            finsight.read: Read access to FinSight resources
+            finsight.write: Write access to FinSight resources
+            finsight.journal-entries.write: Write journal entries
+            finsight.payables.write: Write payables
+            finsight.receivables.write: Write receivables
+  parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      description: >
+        Business key of the record (for journal entries, `documentId`).
+        Retained 24 hours; a repeated key with an identical payload returns the
+        original result, a divergent payload returns 409 DUPLICATE_ENTRY.
+      schema:
+        type: string
+        maxLength: 128
+      example: MC01-2026-0100004821
+    Tenant:
+      name: X-FinSight-Tenant
+      in: header
+      required: true
+      description: FinSight tenant identifier matching the SAP company code routing.
+      schema:
+        type: string
+        enum:
+          - MERIDIAN-MC01
+          - MERIDIAN-MC02
+          - MERIDIAN-MC03
+      example: MERIDIAN-MC01
+    CallbackUrl:
+      name: X-Callback-Url
+      in: header
+      required: false
+      description: >
+        Optional HTTPS webhook URL that FinSight calls with the asynchronous
+        load-confirmation event once the record is durably committed or rejected.
+      schema:
+        type: string
+        format: uri
+      example: https://loader.integration.meridian-mfg.example.com/webhooks/finsight-load
+    PageSize:
+      name: pageSize
+      in: query
+      required: false
+      description: Maximum number of records per page (cursor pagination).
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 500
+        default: 100
+      example: 100
+    Cursor:
+      name: cursor
+      in: query
+      required: false
+      description: Opaque continuation cursor returned as nextCursor in the previous page.
+      schema:
+        type: string
+      example: eyJvZmZzZXQiOjEwMH0
+    FiscalYearQuery:
+      name: fiscalYear
+      in: query
+      required: false
+      description: Filter by fiscal year.
+      schema:
+        type: integer
+        minimum: 2000
+        maximum: 2099
+      example: 2026
+  headers:
+    XRateLimitLimit:
+      description: Maximum requests permitted in the current window.
+      schema:
+        type: integer
+      example: 600
+    XRateLimitRemaining:
+      description: Remaining requests in the current window.
+      schema:
+        type: integer
+      example: 598
+    XRateLimitReset:
+      description: Unix epoch seconds at which the rate-limit window resets.
+      schema:
+        type: integer
+      example: 1751880600
+    RetryAfter:
+      description: Seconds the client should wait before retrying.
+      schema:
+        type: integer
+      example: 30
+    Location:
+      description: Canonical URL of the created resource.
+      schema:
+        type: string
+        format: uri
+      example: https://api.finsight.zetheta.example.com/api/v2/journal-entries/MC01-2026-0100004821
+  responses:
+    JournalEntryCreated:
+      description: Journal entry accepted and queued for durable commit.
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-RateLimit-Limit:
+          $ref: '#/components/headers/XRateLimitLimit'
+        X-RateLimit-Remaining:
+          $ref: '#/components/headers/XRateLimitRemaining'
+        X-RateLimit-Reset:
+          $ref: '#/components/headers/XRateLimitReset'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RecordAck'
+          example:
+            recordId: MC01-2026-0100004821
+            tenantId: MERIDIAN-MC01
+            status: ACCEPTED
+            createdAt: '2026-07-07T09:30:12Z'
+    JournalEntryIdempotentReplay:
+      description: Idempotent replay - identical payload already processed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RecordAck'
+          example:
+            recordId: MC01-2026-0100004821
+            tenantId: MERIDIAN-MC01
+            status: COMMITTED
+            createdAt: '2026-07-07T09:30:12Z'
+    RecordCreated:
+      description: Record accepted and queued for durable commit.
+      headers:
+        Location:
+          $ref: '#/components/headers/Location'
+        X-RateLimit-Limit:
+          $ref: '#/components/headers/XRateLimitLimit'
+        X-RateLimit-Remaining:
+          $ref: '#/components/headers/XRateLimitRemaining'
+        X-RateLimit-Reset:
+          $ref: '#/components/headers/XRateLimitReset'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RecordAck'
+          example:
+            recordId: MC01-2026-1900002011
+            tenantId: MERIDIAN-MC01
+            status: ACCEPTED
+            createdAt: '2026-07-07T09:31:02Z'
+    RecordIdempotentReplay:
+      description: Idempotent replay - identical payload already processed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/RecordAck'
+          example:
+            recordId: MC01-2026-1900002011
+            tenantId: MERIDIAN-MC01
+            status: COMMITTED
+            createdAt: '2026-07-07T09:31:02Z'
+    BadRequest:
+      description: Request failed validation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            invalidRequest:
+              summary: INVALID_REQUEST
+              value:
+                error:
+                  code: INVALID_REQUEST
+                  httpStatus: 400
+                  message: Request body fails JSON schema validation.
+                  target: amountLC
+                  correlationId: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+                  retryable: false
+            invalidDate:
+              summary: INVALID_DATE_FORMAT
+              value:
+                error:
+                  code: INVALID_DATE_FORMAT
+                  httpStatus: 400
+                  message: Date field does not conform to ISO 8601 (YYYY-MM-DD).
+                  target: postingDate
+                  correlationId: 7c9e6679-7425-40de-944b-e07fc1f90ae8
+                  retryable: false
+            invalidCurrency:
+              summary: INVALID_CURRENCY_CODE
+              value:
+                error:
+                  code: INVALID_CURRENCY_CODE
+                  httpStatus: 400
+                  message: Currency code is not valid ISO 4217 (3-letter).
+                  target: currencyLC
+                  correlationId: 7c9e6679-7425-40de-944b-e07fc1f90ae9
+                  retryable: false
+    Unauthorized:
+      description: Authentication failed.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            tokenExpired:
+              summary: TOKEN_EXPIRED
+              value:
+                error:
+                  code: TOKEN_EXPIRED
+                  httpStatus: 401
+                  message: OAuth 2.0 access token has expired.
+                  correlationId: 1b4e28ba-2fa1-11d2-883f-0016d3cca427
+                  retryable: true
+            invalidToken:
+              summary: INVALID_TOKEN
+              value:
+                error:
+                  code: INVALID_TOKEN
+                  httpStatus: 401
+                  message: Token is malformed, revoked, or from the wrong issuer.
+                  correlationId: 1b4e28ba-2fa1-11d2-883f-0016d3cca428
+                  retryable: false
+    Forbidden:
+      description: The token lacks the required scope or the tenant is locked.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            insufficientScope:
+              summary: INSUFFICIENT_SCOPE
+              value:
+                error:
+                  code: INSUFFICIENT_SCOPE
+                  httpStatus: 403
+                  message: Token lacks required OAuth scope for this endpoint.
+                  correlationId: 2c5f39cb-3ab2-42e3-994b-1127e4ddb538
+                  retryable: false
+            tenantLocked:
+              summary: TENANT_LOCKED
+              value:
+                error:
+                  code: TENANT_LOCKED
+                  httpStatus: 403
+                  message: Analytics tenant is locked (maintenance or billing issue).
+                  correlationId: 2c5f39cb-3ab2-42e3-994b-1127e4ddb539
+                  retryable: false
+    NotFound:
+      description: Referenced master data entity does not exist in target.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: RESOURCE_NOT_FOUND
+              httpStatus: 404
+              message: Referenced master data entity does not exist in target.
+              target: costCentre
+              correlationId: 3d6a40dc-4bc3-43f4-aa5b-2238f5eec640
+              retryable: false
+    Conflict:
+      description: Duplicate or concurrent modification.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            duplicate:
+              summary: DUPLICATE_ENTRY
+              value:
+                error:
+                  code: DUPLICATE_ENTRY
+                  httpStatus: 409
+                  message: Record with same business key already exists with a different payload.
+                  target: documentId
+                  correlationId: 4e7b51ed-5cd4-44a5-bb6c-3349a6ffd751
+                  retryable: false
+            concurrent:
+              summary: CONCURRENT_MODIFICATION
+              value:
+                error:
+                  code: CONCURRENT_MODIFICATION
+                  httpStatus: 409
+                  message: Another process is modifying the same resource.
+                  correlationId: 4e7b51ed-5cd4-44a5-bb6c-3349a6ffd752
+                  retryable: true
+    UnprocessableEntity:
+      description: Business rule or referential integrity violation.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          examples:
+            businessRule:
+              summary: BUSINESS_RULE_VIOLATION
+              value:
+                error:
+                  code: BUSINESS_RULE_VIOLATION
+                  httpStatus: 422
+                  message: Data violates analytics platform business rules.
+                  target: amountLC
+                  ruleName: DEBIT_CREDIT_BALANCE
+                  correlationId: 5f8b62fe-6de5-45a6-cc7d-4450b7bce862
+                  retryable: false
+            referentialIntegrity:
+              summary: REFERENTIAL_INTEGRITY
+              value:
+                error:
+                  code: REFERENTIAL_INTEGRITY
+                  httpStatus: 422
+                  message: Referenced entity (cost centre, GL account) does not exist.
+                  target: costCentre
+                  correlationId: 5f8b62fe-6de5-45a6-cc7d-4450b7bce863
+                  retryable: true
+    TooManyRequests:
+      description: Rate limit exceeded.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+        X-RateLimit-Limit:
+          $ref: '#/components/headers/XRateLimitLimit'
+        X-RateLimit-Remaining:
+          $ref: '#/components/headers/XRateLimitRemaining'
+        X-RateLimit-Reset:
+          $ref: '#/components/headers/XRateLimitReset'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: RATE_LIMITED
+              httpStatus: 429
+              message: Too many requests, rate limit exceeded.
+              correlationId: 6a9b73bf-7ef6-46a7-dd8e-5561b8bcf973
+              retryable: true
+    InternalError:
+      description: Unexpected platform error.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: INTERNAL_ERROR
+              httpStatus: 500
+              message: Unexpected platform error (server-side).
+              correlationId: 7a0b84bc-8fa7-47a8-ee9f-6672b9bcd084
+              retryable: true
+    ServiceUnavailable:
+      description: Platform under maintenance or overloaded.
+      headers:
+        Retry-After:
+          $ref: '#/components/headers/RetryAfter'
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: SERVICE_UNAVAILABLE
+              httpStatus: 503
+              message: Platform under maintenance or overloaded.
+              correlationId: 8a1b95bc-9ba8-48a9-ff0a-7783b0bcd195
+              retryable: true
+    GatewayTimeout:
+      description: Upstream service timeout.
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/Error'
+          example:
+            error:
+              code: GATEWAY_TIMEOUT
+              httpStatus: 504
+              message: Upstream service timeout.
+              correlationId: 9a2b06bc-0ba9-49a0-aa1b-8894b1bcd206
+              retryable: true
+  callbacks:
+    LoadConfirmation:
+      '{$request.header.X-Callback-Url}':
+        post:
+          operationId: loadConfirmationCallback
+          summary: Asynchronous load-confirmation webhook
+          description: >
+            FinSight invokes the caller-supplied webhook once a previously
+            accepted record has been durably committed or rejected in the
+            analytical store.
+          tags:
+            - Journal Entries
+          requestBody:
+            required: true
+            content:
+              application/json:
+                schema:
+                  $ref: '#/components/schemas/LoadConfirmationEvent'
+                example:
+                  eventId: 9a1b2c3d-4e5f-6789-abcd-ef0123456789
+                  recordId: MC01-2026-0100004821
+                  resource: journal-entries
+                  tenantId: MERIDIAN-MC01
+                  status: COMMITTED
+                  committedAt: '2026-07-07T09:30:15Z'
+                  correlationId: 7c9e6679-7425-40de-944b-e07fc1f90ae7
+          responses:
+            '200':
+              description: Webhook acknowledged by the receiver.
+            '410':
+              description: Webhook endpoint gone; FinSight will disable this callback URL.
+  schemas:
+    Error:
+      type: object
+      description: Shared FinSight error envelope.
+      required:
+        - error
+      properties:
+        error:
+          type: object
+          required:
+            - code
+            - httpStatus
+            - message
+          properties:
+            code:
+              $ref: '#/components/schemas/ErrorCode'
+            httpStatus:
+              type: integer
+              description: Mirrored HTTP status code.
+            message:
+              type: string
+              description: Human-readable error description.
+            target:
+              type: string
+              description: Offending field, when applicable.
+            ruleName:
+              type: string
+              description: Name of the violated business rule (422 BUSINESS_RULE_VIOLATION).
+            correlationId:
+              type: string
+              format: uuid
+              description: Correlation id for tracing across the integration pipeline.
+            retryable:
+              type: boolean
+              description: Whether the caller may retry per the recommended-action policy.
+    ErrorCode:
+      type: string
+      description: Canonical FinSight error code registry.
+      enum:
+        - INVALID_REQUEST
+        - INVALID_DATE_FORMAT
+        - INVALID_CURRENCY_CODE
+        - TOKEN_EXPIRED
+        - INVALID_TOKEN
+        - INSUFFICIENT_SCOPE
+        - TENANT_LOCKED
+        - RESOURCE_NOT_FOUND
+        - DUPLICATE_ENTRY
+        - CONCURRENT_MODIFICATION
+        - BUSINESS_RULE_VIOLATION
+        - REFERENTIAL_INTEGRITY
+        - RATE_LIMITED
+        - INTERNAL_ERROR
+        - SERVICE_UNAVAILABLE
+        - GATEWAY_TIMEOUT
+    RecordStatus:
+      type: string
+      description: Lifecycle status of a loaded record.
+      enum:
+        - ACCEPTED
+        - COMMITTED
+        - REJECTED
+    RecordAck:
+      type: object
+      description: Generic acknowledgement returned by create operations.
+      required:
+        - recordId
+        - tenantId
+        - status
+      properties:
+        recordId:
+          type: string
+          description: Business key of the stored record.
+        tenantId:
+          type: string
+          description: FinSight tenant the record belongs to.
+        status:
+          $ref: '#/components/schemas/RecordStatus'
+        createdAt:
+          type: string
+          format: date-time
+          description: Server timestamp when the record was accepted.
+    LoadConfirmationEvent:
+      type: object
+      description: Asynchronous load-confirmation webhook payload.
+      required:
+        - eventId
+        - recordId
+        - resource
+        - tenantId
+        - status
+      properties:
+        eventId:
+          type: string
+          format: uuid
+          description: Unique event identifier.
+        recordId:
+          type: string
+          description: Business key of the confirmed record.
+        resource:
+          type: string
+          description: Resource path the record belongs to (for example journal-entries).
+        tenantId:
+          type: string
+          description: FinSight tenant.
+        status:
+          $ref: '#/components/schemas/RecordStatus'
+        committedAt:
+          type: string
+          format: date-time
+          description: Timestamp of durable commit (present when status is COMMITTED).
+        rejectionReason:
+          type: string
+          description: Reason the record was rejected (present when status is REJECTED).
+        correlationId:
+          type: string
+          format: uuid
+          description: Correlation id linking to the originating create request.
+    ListMeta:
+      type: object
+      description: Shared cursor-pagination envelope.
+      properties:
+        pageSize:
+          type: integer
+          description: Number of records in this page.
+        nextCursor:
+          type: string
+          nullable: true
+          description: Cursor for the next page; null when the last page has been reached.
+        totalEstimate:
+          type: integer
+          description: Approximate total number of records available.
+    JournalEntryInput:
+      type: object
+      description: Transformed General Ledger journal entry payload.
+      required:
+        - documentId
+        - tenantId
+        - companyCode
+        - glAccount
+        - postingDate
+        - amountLC
+        - currencyLC
+        - debitCredit
+      properties:
+        documentId:
+          type: string
+          description: Business key (idempotency key), companyCode-fiscalYear-documentNumber.
+        tenantId:
+          type: string
+          description: FinSight tenant.
+        companyCode:
+          type: string
+          description: Originating SAP company code.
+        fiscalYear:
+          type: integer
+        fiscalPeriod:
+          type: integer
+          description: SAP posting period 1-16.
+        calendarMonth:
+          type: string
+          description: Fiscal-to-calendar mapped month (YYYY-MM).
+        glAccount:
+          type: string
+          description: Mapped analytical G/L account.
+        glAccountName:
+          type: string
+        postingDate:
+          type: string
+          format: date
+        amountLC:
+          type: number
+          format: double
+        currencyLC:
+          type: string
+          description: ISO 4217 currency code.
+        debitCredit:
+          type: string
+          enum:
+            - DEBIT
+            - CREDIT
+        costCentre:
+          type: string
+        profitCentre:
+          type: string
+        sourceDocumentNumber:
+          type: string
+          description: SAP document number preserved for lineage.
+    JournalEntry:
+      allOf:
+        - $ref: '#/components/schemas/JournalEntryInput'
+        - type: object
+          properties:
+            recordId:
+              type: string
+            status:
+              $ref: '#/components/schemas/RecordStatus'
+            createdAt:
+              type: string
+              format: date-time
+    JournalEntryList:
+      allOf:
+        - $ref: '#/components/schemas/ListMeta'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/JournalEntry'
+    PayableInput:
+      type: object
+      description: Transformed Accounts Payable open item payload.
+      required:
+        - documentId
+        - tenantId
+        - vendorId
+        - amountLC
+        - currencyLC
+      properties:
+        documentId:
+          type: string
+        tenantId:
+          type: string
+        vendorId:
+          type: string
+        vendorName:
+          type: string
+        amountLC:
+          type: number
+          format: double
+        currencyLC:
+          type: string
+        dueDate:
+          type: string
+          format: date
+        ageingBucket:
+          type: string
+          description: Derived ageing bucket.
+          enum:
+            - CURRENT
+            - DAYS_1_30
+            - DAYS_31_60
+            - DAYS_61_90
+            - DAYS_90_PLUS
+        postingDate:
+          type: string
+          format: date
+    Payable:
+      allOf:
+        - $ref: '#/components/schemas/PayableInput'
+        - type: object
+          properties:
+            recordId:
+              type: string
+            status:
+              $ref: '#/components/schemas/RecordStatus'
+    PayableList:
+      allOf:
+        - $ref: '#/components/schemas/ListMeta'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/Payable'
+    ReceivableInput:
+      type: object
+      description: Transformed Accounts Receivable open item payload.
+      required:
+        - documentId
+        - tenantId
+        - customerId
+        - amountLC
+        - currencyLC
+      properties:
+        documentId:
+          type: string
+        tenantId:
+          type: string
+        customerId:
+          type: string
+        customerName:
+          type: string
+        amountLC:
+          type: number
+          format: double
+        currencyLC:
+          type: string
+        dueDate:
+          type: string
+          format: date
+        dunningLevel:
+          type: integer
+        ageingBucket:
+          type: string
+          enum:
+            - CURRENT
+            - DAYS_1_30
+            - DAYS_31_60
+            - DAYS_61_90
+            - DAYS_90_PLUS
+    Receivable:
+      allOf:
+        - $ref: '#/components/schemas/ReceivableInput'
+        - type: object
+          properties:
+            recordId:
+              type: string
+            status:
+              $ref: '#/components/schemas/RecordStatus'
+    ReceivableList:
+      allOf:
+        - $ref: '#/components/schemas/ListMeta'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/Receivable'
+    CostCentreInput:
+      type: object
+      description: Transformed cost centre master payload with flattened hierarchy.
+      required:
+        - costCentreId
+        - tenantId
+        - name
+      properties:
+        costCentreId:
+          type: string
+        tenantId:
+          type: string
+        name:
+          type: string
+        hierarchyLevel1:
+          type: string
+        hierarchyLevel2:
+          type: string
+        hierarchyLevel3:
+          type: string
+        profitCentre:
+          type: string
+        validFrom:
+          type: string
+          format: date
+    CostCentre:
+      allOf:
+        - $ref: '#/components/schemas/CostCentreInput'
+        - type: object
+          properties:
+            recordId:
+              type: string
+            status:
+              $ref: '#/components/schemas/RecordStatus'
+    CostCentreList:
+      allOf:
+        - $ref: '#/components/schemas/ListMeta'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/CostCentre'
+    ProfitCentreInput:
+      type: object
+      description: Transformed profit centre master payload.
+      required:
+        - profitCentreId
+        - tenantId
+        - name
+      properties:
+        profitCentreId:
+          type: string
+        tenantId:
+          type: string
+        name:
+          type: string
+        segment:
+          type: string
+        hierarchyLevel1:
+          type: string
+        hierarchyLevel2:
+          type: string
+        validFrom:
+          type: string
+          format: date
+    ProfitCentre:
+      allOf:
+        - $ref: '#/components/schemas/ProfitCentreInput'
+        - type: object
+          properties:
+            recordId:
+              type: string
+            status:
+              $ref: '#/components/schemas/RecordStatus'
+    ProfitCentreList:
+      allOf:
+        - $ref: '#/components/schemas/ListMeta'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/ProfitCentre'
+    MaterialLedgerInput:
+      type: object
+      description: Transformed material ledger valuation payload.
+      required:
+        - recordId
+        - tenantId
+        - materialId
+        - plant
+      properties:
+        recordId:
+          type: string
+        tenantId:
+          type: string
+        materialId:
+          type: string
+        plant:
+          type: string
+        standardPrice:
+          type: number
+          format: double
+        movingAveragePrice:
+          type: number
+          format: double
+        totalValue:
+          type: number
+          format: double
+        currencyLC:
+          type: string
+        fiscalPeriod:
+          type: integer
+    MaterialLedgerRecord:
+      allOf:
+        - $ref: '#/components/schemas/MaterialLedgerInput'
+        - type: object
+          properties:
+            status:
+              $ref: '#/components/schemas/RecordStatus'
+    MaterialLedgerList:
+      allOf:
+        - $ref: '#/components/schemas/ListMeta'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/MaterialLedgerRecord'
+    PurchaseOrderInput:
+      type: object
+      description: Transformed purchase order line payload.
+      required:
+        - recordId
+        - tenantId
+        - purchaseOrderId
+        - itemNumber
+      properties:
+        recordId:
+          type: string
+        tenantId:
+          type: string
+        purchaseOrderId:
+          type: string
+        itemNumber:
+          type: integer
+        vendorId:
+          type: string
+        materialId:
+          type: string
+        netValue:
+          type: number
+          format: double
+        currency:
+          type: string
+        plant:
+          type: string
+        deliveryDate:
+          type: string
+          format: date
+    PurchaseOrder:
+      allOf:
+        - $ref: '#/components/schemas/PurchaseOrderInput'
+        - type: object
+          properties:
+            status:
+              $ref: '#/components/schemas/RecordStatus'
+    PurchaseOrderList:
+      allOf:
+        - $ref: '#/components/schemas/ListMeta'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/PurchaseOrder'
+    SalesOrderInput:
+      type: object
+      description: Transformed sales order line payload.
+      required:
+        - recordId
+        - tenantId
+        - salesOrderId
+        - itemNumber
+      properties:
+        recordId:
+          type: string
+        tenantId:
+          type: string
+        salesOrderId:
+          type: string
+        itemNumber:
+          type: integer
+        customerId:
+          type: string
+        materialId:
+          type: string
+        netValue:
+          type: number
+          format: double
+        currency:
+          type: string
+        plant:
+          type: string
+        requestedDeliveryDate:
+          type: string
+          format: date
+    SalesOrder:
+      allOf:
+        - $ref: '#/components/schemas/SalesOrderInput'
+        - type: object
+          properties:
+            status:
+              $ref: '#/components/schemas/RecordStatus'
+    SalesOrderList:
+      allOf:
+        - $ref: '#/components/schemas/ListMeta'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/SalesOrder'
+    FixedAssetInput:
+      type: object
+      description: Transformed fixed asset payload.
+      required:
+        - recordId
+        - tenantId
+        - assetId
+      properties:
+        recordId:
+          type: string
+        tenantId:
+          type: string
+        assetId:
+          type: string
+        description:
+          type: string
+        costCentre:
+          type: string
+        netBookValue:
+          type: number
+          format: double
+        currencyLC:
+          type: string
+        capitalisationDate:
+          type: string
+          format: date
+    FixedAsset:
+      allOf:
+        - $ref: '#/components/schemas/FixedAssetInput'
+        - type: object
+          properties:
+            status:
+              $ref: '#/components/schemas/RecordStatus'
+    FixedAssetList:
+      allOf:
+        - $ref: '#/components/schemas/ListMeta'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/FixedAsset'
+    BankStatementInput:
+      type: object
+      description: Transformed bank statement line payload.
+      required:
+        - recordId
+        - tenantId
+        - statementId
+        - statementLineNumber
+      properties:
+        recordId:
+          type: string
+        tenantId:
+          type: string
+        statementId:
+          type: string
+        statementLineNumber:
+          type: integer
+        glAccount:
+          type: string
+        amount:
+          type: number
+          format: double
+        currency:
+          type: string
+        valueDate:
+          type: string
+          format: date
+    BankStatement:
+      allOf:
+        - $ref: '#/components/schemas/BankStatementInput'
+        - type: object
+          properties:
+            status:
+              $ref: '#/components/schemas/RecordStatus'
+    BankStatementList:
+      allOf:
+        - $ref: '#/components/schemas/ListMeta'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/BankStatement'
+    BudgetActualInput:
+      type: object
+      description: Transformed budget/actual total payload.
+      required:
+        - recordId
+        - tenantId
+        - costCentre
+        - fiscalPeriod
+        - valueType
+      properties:
+        recordId:
+          type: string
+        tenantId:
+          type: string
+        costCentre:
+          type: string
+        costElement:
+          type: string
+        fiscalPeriod:
+          type: integer
+        valueType:
+          type: string
+          enum:
+            - ACTUAL
+            - PLAN
+        amount:
+          type: number
+          format: double
+        budgetAmount:
+          type: number
+          format: double
+        variance:
+          type: number
+          format: double
+        currency:
+          type: string
+    BudgetActual:
+      allOf:
+        - $ref: '#/components/schemas/BudgetActualInput'
+        - type: object
+          properties:
+            status:
+              $ref: '#/components/schemas/RecordStatus'
+    BudgetActualList:
+      allOf:
+        - $ref: '#/components/schemas/ListMeta'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/BudgetActual'
+    InventoryInput:
+      type: object
+      description: Transformed inventory stock payload.
+      required:
+        - recordId
+        - tenantId
+        - materialId
+        - plant
+        - storageLocation
+      properties:
+        recordId:
+          type: string
+        tenantId:
+          type: string
+        materialId:
+          type: string
+        plant:
+          type: string
+        storageLocation:
+          type: string
+        unrestrictedStock:
+          type: number
+          format: double
+        stockValue:
+          type: number
+          format: double
+        currencyLC:
+          type: string
+    InventoryRecord:
+      allOf:
+        - $ref: '#/components/schemas/InventoryInput'
+        - type: object
+          properties:
+            status:
+              $ref: '#/components/schemas/RecordStatus'
+    InventoryList:
+      allOf:
+        - $ref: '#/components/schemas/ListMeta'
+        - type: object
+          properties:
+            data:
+              type: array
+              items:
+                $ref: '#/components/schemas/InventoryRecord'
