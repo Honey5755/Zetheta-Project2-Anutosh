@@ -1,0 +1,35 @@
+%% DGM_State_CircuitBreaker.mmd
+%% Circuit breaker state machine for SAP RFC / FinSight API boundaries (D4)
+%% Parameters: failure threshold >= 50% over rolling window of 20 calls (min 10 samples),
+%%             open duration 30s, half-open probe count 3, success threshold to close 3.
+stateDiagram-v2
+    direction LR
+
+    [*] --> CLOSED
+
+    CLOSED: CLOSED
+    CLOSED: Requests flow normally
+    CLOSED: Count failures over rolling window (20 calls)
+
+    OPEN: OPEN
+    OPEN: Fail fast - reject calls immediately
+    OPEN: Return ERR-SYS fallback, no downstream call
+    OPEN: Start open-duration timer (30s)
+
+    HALFOPEN: HALF-OPEN
+    HALFOPEN: Allow up to 3 probe requests
+    HALFOPEN: Evaluate probe outcomes
+
+    CLOSED --> OPEN: failure ratio >= 50%\nover >= 10 samples\n(rolling window 20)
+    OPEN --> HALFOPEN: open duration (30s)\ntimer elapsed
+    HALFOPEN --> CLOSED: 3 consecutive\nprobe successes\n(reset counters)
+    HALFOPEN --> OPEN: any probe fails\n(reset open timer,\ndouble duration up to 5 min)
+    CLOSED --> CLOSED: success\n(decay failure count)
+
+    note right of OPEN
+        While OPEN the breaker sheds load
+        so a failing SAP RFC pool or FinSight
+        tenant can recover. All shed calls are
+        parked on the domain Kafka topic and
+        replayed once CLOSED.
+    end note
