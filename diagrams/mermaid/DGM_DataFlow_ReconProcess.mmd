@@ -1,0 +1,57 @@
+%% DGM_DataFlow_ReconProcess.mmd
+%% Automated reconciliation with exception-based human intervention (D5)
+flowchart TD
+    classDef auto fill:#438dd5,stroke:#2e6295,color:#fff
+    classDef check fill:#f4b942,stroke:#a87c17,color:#000
+    classDef ok fill:#2fae66,stroke:#1d6e41,color:#fff
+    classDef bad fill:#d9534f,stroke:#8a2f2c,color:#fff
+    classDef human fill:#9b59b6,stroke:#6d3b83,color:#fff
+
+    START(["Batch load completes<br/>Loader emits load.done event"]):::auto
+    TRIG["Reconciliation Service<br/>triggered per batch_id"]:::auto
+
+    C1{"Completeness<br/>src count = tgt count<br/>+ skipped + DLQ ?"}:::check
+    C2{"Accuracy<br/>sampled field match<br/>>= 99.9% ?"}:::check
+    C3{"Consistency<br/>all FK refs resolve<br/>= 100% ?"}:::check
+    C4{"Double-entry<br/>SUM debits = SUM credits<br/>per document ?"}:::check
+    C5{"Checksum<br/>SUM src HSL = SUM tgt amountLC<br/>within tolerance ?"}:::check
+    C6{"Timeliness<br/>batch within SLA<br/>window ?"}:::check
+
+    PASS["Mark batch RECONCILED<br/>write recon record + lineage"]:::ok
+    DASH["Update daily dashboard<br/>+ Prometheus recon_status"]:::ok
+
+    BREAK["Generate break report<br/>classify ERR-RECON-00x"]:::bad
+    TOL{"Variance within<br/>auto-tolerance<br/>AND non-financial ?"}:::check
+    AUTO["Auto-remediate<br/>(stale-rate flag, resync master,<br/>reprocess from DLQ)"]:::auto
+    QUEUE["Raise exception ticket<br/>route to Data Steward queue<br/>severity by ERR-* code"]:::bad
+
+    STEWARD["Data Steward reviews<br/>break report + lineage"]:::human
+    DECIDE{"Resolution path?"}:::human
+    FIX1["Correct mapping /<br/>trigger master data resync"]:::human
+    FIX2["Accept documented variance<br/>(sign-off, audit note)"]:::human
+    ESC["Escalate to Dr. Kulkarni<br/>(Internal Audit) - P2"]:::human
+
+    REPRO["Reprocess affected records<br/>re-run reconciliation"]:::auto
+
+    START --> TRIG --> C1
+    C1 -->|yes| C2
+    C2 -->|yes| C3
+    C3 -->|yes| C4
+    C4 -->|yes| C5
+    C5 -->|yes| C6
+    C6 -->|yes| PASS --> DASH
+
+    C1 -->|no| BREAK
+    C2 -->|no| BREAK
+    C3 -->|no| BREAK
+    C4 -->|no| BREAK
+    C5 -->|no| BREAK
+    C6 -->|no| BREAK
+
+    BREAK --> TOL
+    TOL -->|yes| AUTO --> REPRO
+    TOL -->|no| QUEUE --> STEWARD --> DECIDE
+    DECIDE -->|data issue| FIX1 --> REPRO
+    DECIDE -->|acceptable| FIX2 --> DASH
+    DECIDE -->|control concern| ESC --> DASH
+    REPRO --> C1
