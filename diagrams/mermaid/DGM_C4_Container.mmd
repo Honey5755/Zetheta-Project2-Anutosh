@@ -1,0 +1,45 @@
+%% DGM_C4_Container.mmd
+%% C4 Level 2 - Container Diagram
+%% FDE-9B - Integration Platform internal containers
+flowchart TB
+    classDef ext fill:#999999,stroke:#6b6b6b,color:#ffffff
+    classDef container fill:#438dd5,stroke:#2e6295,color:#ffffff
+    classDef store fill:#438dd5,stroke:#2e6295,color:#ffffff,stroke-dasharray: 4 3
+
+    SAP["SAP S/4HANA<br/>[External System]<br/>Pune DC"]:::ext
+    FIN["Zetheta FinSight 4.2<br/>[External System]<br/>AWS ap-south-1"]:::ext
+
+    subgraph ONPREM["On-Prem - Pune Data Centre"]
+        EXT["ODP Extractor<br/>[Container: Java / SAP JCo]<br/>Delta + batch extraction,<br/>delta-token management,<br/>RFC pool guard (<=50)"]:::container
+        SCH["Scheduler<br/>[Container: Quartz / cron]<br/>Triggers extraction jobs,<br/>respects batch window and<br/>ODP >=30 min rule"]:::container
+    end
+
+    subgraph AWS["AWS ap-south-1 (Mumbai) VPC"]
+        KAFKA["Kafka Cluster<br/>[Container: Apache Kafka]<br/>3 brokers, RF=3, ISR=2<br/>Topics per domain + dlq<br/>Partitioned by company code"]:::container
+        TRANS["Transformation Engine<br/>[Container: Kafka Streams]<br/>Content-based router,<br/>currency/period/hierarchy logic,<br/>GST-preserving mapping"]:::container
+        LOADER["FinSight Loader<br/>[Container: Java / WebClient]<br/>Idempotent REST loader,<br/>circuit breaker, retry"]:::container
+        RECON["Reconciliation Service<br/>[Container: Spring Batch]<br/>Debit=credit + count/sum<br/>checks per document"]:::container
+        AUDIT["Audit / Wire-Tap<br/>[Container: Kafka consumer]<br/>Immutable lineage store<br/>SAP doc -> FinSight record"]:::container
+        DLQ[("DLQ Store<br/>[Container: Kafka topic + S3]<br/>Failed messages,<br/>extended retention")]:::store
+        MON["Monitoring Stack<br/>[Container]<br/>Prometheus + Grafana<br/>+ ELK + PagerDuty"]:::container
+        S3[("Claim-Check Store<br/>[Container: S3 ap-south-1]<br/>Large batch payloads")]:::store
+        META[("Control DB<br/>[Container: PostgreSQL RDS]<br/>Delta tokens, run state,<br/>recon results")]:::store
+    end
+
+    SCH -->|Triggers jobs| EXT
+    EXT -->|Reads via ODP / OData<br/>OAuth2 + X.509| SAP
+    EXT -->|Publishes domain events| KAFKA
+    EXT -->|Stores large payloads| S3
+    EXT -->|Persists delta tokens| META
+    KAFKA -->|Streams per-domain topics| TRANS
+    TRANS -->|Dereferences claim check| S3
+    TRANS -->|Publishes normalised events| KAFKA
+    KAFKA -->|Consumes load-ready events| LOADER
+    LOADER -->|POST /api/v2/ resources<br/>Idempotency-Key| FIN
+    LOADER -->|Routes failures| DLQ
+    TRANS -->|Routes unmappable records| DLQ
+    KAFKA -.->|Wire-tap copy| AUDIT
+    RECON -->|Reads source + target counts| META
+    RECON -->|Queries loaded records| FIN
+    RECON -->|Writes breaks| DLQ
+    EXT & TRANS & LOADER & RECON & KAFKA -.->|Metrics + logs| MON

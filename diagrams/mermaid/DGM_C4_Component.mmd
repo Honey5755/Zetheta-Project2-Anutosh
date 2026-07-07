@@ -1,0 +1,41 @@
+%% DGM_C4_Component.mmd
+%% C4 Level 3 - Component Diagram (Transformation Engine + Loader path)
+flowchart TB
+    classDef comp fill:#85bbf0,stroke:#5d82a8,color:#000000
+    classDef ext fill:#999999,stroke:#6b6b6b,color:#ffffff
+    classDef store fill:#85bbf0,stroke:#5d82a8,color:#000000,stroke-dasharray: 4 3
+
+    KIN["Kafka - domain topics<br/>[Container]"]:::ext
+    KOUT["Kafka - load-ready topics<br/>[Container]"]:::ext
+    FIN["Zetheta FinSight 4.2<br/>[External System]"]:::ext
+    DLQ[("dlq topic + S3")]:::store
+
+    subgraph TE["Transformation Engine [Container]"]
+        CONS["Polling Consumer<br/>[Component]<br/>Reads domain events,<br/>manages offsets"]:::comp
+        ROUTER["Content-Based Router<br/>[Component]<br/>Routes by domain +<br/>company code MC01/02/03"]:::comp
+        CLAIM["Claim-Check Resolver<br/>[Component]<br/>Fetches large payloads<br/>from S3"]:::comp
+        MAP["Domain Mappers<br/>[Component]<br/>GL/AP/AR/CC/PC/ML/PO/SO/FA/Bank<br/>field-level transforms"]:::comp
+        CURR["Currency + Period Enricher<br/>[Component]<br/>TCURR KURST=M point-in-time,<br/>V3 fiscal -> calendar"]:::comp
+        HIER["Hierarchy Flattener<br/>[Component]<br/>SETNODE/SETLEAF L1-L7"]:::comp
+        GSTC["GST Preserver<br/>[Component]<br/>Retains CGST/SGST/IGST"]:::comp
+        VAL["Validator<br/>[Component]<br/>DQ rules, referential<br/>integrity checks"]:::comp
+    end
+
+    subgraph LD["FinSight Loader [Container]"]
+        IDEM["Idempotent Receiver<br/>[Component]<br/>Business-key dedup<br/>(documentId)"]:::comp
+        TENANT["Tenant Resolver<br/>[Component]<br/>MC0x -> MERIDIAN-MC0x"]:::comp
+        CB["Circuit Breaker<br/>[Component]<br/>CLOSED/OPEN/HALF-OPEN"]:::comp
+        RETRY["Retry Handler<br/>[Component]<br/>backoff w/ jitter"]:::comp
+        HTTP["REST Client<br/>[Component]<br/>POST /api/v2/ resources<br/>OAuth2 client_credentials"]:::comp
+    end
+
+    KIN --> CONS --> ROUTER
+    ROUTER --> CLAIM --> MAP
+    ROUTER --> MAP
+    MAP --> CURR --> HIER --> GSTC --> VAL
+    VAL -->|valid| KOUT
+    VAL -->|DATA_QUALITY fail| DLQ
+    KOUT --> IDEM --> TENANT --> CB --> HTTP
+    HTTP -->|POST| FIN
+    HTTP -->|TRANSIENT / 5xx / 429| RETRY --> CB
+    RETRY -->|exhausted / PERMANENT| DLQ

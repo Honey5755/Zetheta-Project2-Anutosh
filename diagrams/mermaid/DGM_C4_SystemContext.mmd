@@ -1,0 +1,28 @@
+%% DGM_C4_SystemContext.mmd
+%% C4 Level 1 - System Context
+%% FDE-9B - Custom API Integration (SAP S/4HANA -> Zetheta FinSight)
+%% Project 493560B - Meridian Manufacturing Ltd.
+flowchart TB
+    classDef person fill:#08427b,stroke:#052e56,color:#ffffff
+    classDef system fill:#1168bd,stroke:#0b4884,color:#ffffff
+    classDef external fill:#999999,stroke:#6b6b6b,color:#ffffff
+
+    CFO["Ananya Krishnan<br/>CFO<br/>[Person]<br/>Wants near real-time<br/>financial KPIs"]:::person
+    AUD["Dr. Sanjay Kulkarni<br/>Head of Internal Audit<br/>[Person]<br/>Needs full lineage<br/>and reconciliation"]:::person
+    BASIS["Priya Deshmukh<br/>SAP Basis Admin<br/>[Person]<br/>Guards RFC pool<br/>and SAP performance"]:::person
+
+    IES["Integration Platform<br/>[Software System]<br/>Extracts, transforms and loads Meridian<br/>financial data from SAP S/4HANA into<br/>Zetheta FinSight within a 4h SLA"]:::system
+
+    SAP["SAP S/4HANA 2023 FPS02<br/>[External System]<br/>PRD Client 100 - Pune DC<br/>~2.1M txns/month across<br/>MC01, MC02, MC03"]:::external
+    FIN["Zetheta FinSight 4.2<br/>[External System]<br/>AWS ap-south-1<br/>Tenants MERIDIAN-MC01..03"]:::external
+    GST["GST Network<br/>[External System]<br/>CGST/SGST/IGST validation"]:::external
+    AAD["Azure AD<br/>[External System]<br/>Identity provider"]:::external
+
+    CFO -->|Views dashboards in| FIN
+    AUD -->|Reviews audit trail via| IES
+    BASIS -->|Monitors load on| SAP
+
+    IES -->|Extracts delta and batch data via ODP / OData<br/>OAuth2 + X.509| SAP
+    IES -->|Loads normalised records via REST /api/v2/<br/>OAuth2 client_credentials| FIN
+    IES -->|Validates GSTIN and tax breakdown| GST
+    IES -->|Authenticates service identities against| AAD
